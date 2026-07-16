@@ -1,0 +1,22 @@
+image:
+  repository: simensnx/api-server
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  port: 8080
+
+env:
+  PORT: "8080"
+  # DATABASE_URL и RABBITMQ_URL — прокинуть через Secret, не хардкодить
+  # (см. ROADMAP.md — Phase 1: секреты через Vault/External Secrets Operator)
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

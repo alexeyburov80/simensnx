@@ -1,0 +1,111 @@
+name: simensnx
+
+# ВНИМАНИЕ: это окружение для локальной разработки, НЕ прод-топология.
+# В проде: PostgreSQL — HA (Patroni/CloudNativePG), RabbitMQ — 3-нодовый
+# кластер через Cluster Operator в Kubernetes (см. deploy/helm и ARCHITECTURE.md).
+
+services:
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-simensnx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-simensnx}
+      POSTGRES_DB: ${POSTGRES_DB:-simensnx}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-simensnx}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-simensnx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-simensnx}
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  auth-stub:
+    build: ./services/auth-stub
+    environment:
+      PORT: "8081"
+    depends_on:
+      - postgres
+
+  license-server-stub:
+    build: ./services/license-server-stub
+    environment:
+      PORT: "8083"
+
+  file-storage-service:
+    build: ./services/file-storage-service
+    environment:
+      PORT: "8084"
+    volumes:
+      - filestorage:/data
+
+  log-collector-stub:
+    build: ./services/log-collector-stub
+    environment:
+      PORT: "8085"
+
+  job-orchestrator:
+    build: ./services/job-orchestrator
+    environment:
+      PORT: "8082"
+      DATABASE_URL: postgres://${POSTGRES_USER:-simensnx}:${POSTGRES_PASSWORD:-simensnx}@postgres:5432/${POSTGRES_DB:-simensnx}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-simensnx}:${RABBITMQ_PASSWORD:-simensnx}@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  api-server:
+    build: ./services/api-server
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-simensnx}:${POSTGRES_PASSWORD:-simensnx}@postgres:5432/${POSTGRES_DB:-simensnx}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-simensnx}:${RABBITMQ_PASSWORD:-simensnx}@rabbitmq:5672/
+      AUTH_SERVICE_URL: http://auth-stub:8081
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth-stub:
+        condition: service_started
+
+  # Локальная линуксовая заглушка для проверки протокола.
+  # Реальный воркер — Windows, вне docker-compose/k8s. См. services/nx-worker-stub/README.md
+  nx-worker-stub:
+    build: ./services/nx-worker-stub
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-simensnx}:${RABBITMQ_PASSWORD:-simensnx}@rabbitmq:5672/
+      FILE_STORAGE_URL: http://file-storage-service:8084
+      LICENSE_SERVER_URL: http://license-server-stub:8083
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      file-storage-service:
+        condition: service_started
+      license-server-stub:
+        condition: service_started
+
+volumes:
+  pgdata:
+  filestorage:

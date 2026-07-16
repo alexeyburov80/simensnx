@@ -6,8 +6,11 @@ COPY CMakeLists.txt .
 COPY src ./src
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libbrotli1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/api-server /usr/local/bin/api-server
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/api-server"]

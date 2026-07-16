@@ -6,7 +6,7 @@ COPY CMakeLists.txt .
 COPY src ./src
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/job-orchestrator /usr/local/bin/job-orchestrator
 EXPOSE 8082

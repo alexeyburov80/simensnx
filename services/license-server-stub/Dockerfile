@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+RUN rm -rf build && \
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel
 
 FROM debian:bookworm-slim

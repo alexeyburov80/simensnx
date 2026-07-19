@@ -1,24 +1,56 @@
 #include "QtAmqpConsumer.h"
 
+#include <algorithm>
 #include <QDebug>
 
-QtAmqpConsumer::QtAmqpConsumer(QObject *parent) : QObject(parent) {}
+QtAmqpConsumer::QtAmqpConsumer(QObject *parent) : QObject(parent) {
+    connect(&m_heartbeatTimer, &QTimer::timeout, this, &QtAmqpConsumer::sendHeartbeat);
+    m_reconnectTimer.setSingleShot(true);
+    connect(&m_reconnectTimer, &QTimer::timeout, this, &QtAmqpConsumer::doConnect);
+}
 
 QtAmqpConsumer::~QtAmqpConsumer() {
+    m_heartbeatTimer.stop();
+    m_reconnectTimer.stop();
     if (m_channel) m_channel->close();
     if (m_connection) m_connection->close();
 }
 
 void QtAmqpConsumer::connectToServer(const QUrl &rabbitmqUrl) {
-    const std::string host = rabbitmqUrl.host().toStdString();
-    const quint16 port = rabbitmqUrl.port(5672);
-    const std::string user = rabbitmqUrl.userName().toStdString();
-    const std::string pass = rabbitmqUrl.password().toStdString();
-    std::string vhost = rabbitmqUrl.path().toStdString();
+    m_url = rabbitmqUrl;
+    doConnect();
+}
+
+void QtAmqpConsumer::doConnect() {
+    const std::string host = m_url.host().toStdString();
+    const quint16 port = m_url.port(5672);
+    const std::string user = m_url.userName().toStdString();
+    const std::string pass = m_url.password().toStdString();
+    std::string vhost = m_url.path().toStdString();
     if (vhost.empty()) vhost = "/";
+
+    m_channel.reset(); // старый канал невалиден относительно нового connection
 
     AMQP::Address address(host, port, AMQP::Login(user, pass), vhost);
     m_connection = std::make_unique<AMQP::TcpConnection>(this, address);
+    qInfo() << "[AMQP] connecting to" << m_url.host() << ":" << port;
+}
+
+void QtAmqpConsumer::scheduleReconnect() {
+    if (m_reconnectTimer.isActive()) return;
+    qWarning() << "[AMQP] reconnecting in" << m_reconnectDelayMs << "ms";
+    m_reconnectTimer.start(m_reconnectDelayMs);
+    m_reconnectDelayMs = std::min(m_reconnectDelayMs * 2, kMaxReconnectDelayMs);
+}
+
+uint16_t QtAmqpConsumer::onNegotiate(AMQP::TcpConnection * /*connection*/, uint16_t interval) {
+    m_negotiatedHeartbeat = interval;
+    qInfo() << "[AMQP] heartbeat interval negotiated:" << interval << "s";
+    return interval;
+}
+
+void QtAmqpConsumer::sendHeartbeat() {
+    if (m_connection) m_connection->heartbeat();
 }
 
 void QtAmqpConsumer::monitor(AMQP::TcpConnection * /*connection*/, int fd, int flags) {
@@ -55,12 +87,15 @@ void QtAmqpConsumer::onFdActivated(int fd, int flag) {
 
 void QtAmqpConsumer::onError(AMQP::TcpConnection * /*connection*/, const char *message) {
     m_ready = false;
+    m_heartbeatTimer.stop();
     qWarning() << "[AMQP] connection error:" << message;
     emit connectionError(QString::fromUtf8(message));
+    scheduleReconnect();
 }
 
 void QtAmqpConsumer::onConnected(AMQP::TcpConnection *connection) {
     qInfo() << "[AMQP] TCP connection established, opening channel";
+    m_reconnectDelayMs = 2000;
     m_channel = std::make_unique<AMQP::TcpChannel>(connection);
 
     m_channel->onError([this](const char *message) {
@@ -74,12 +109,19 @@ void QtAmqpConsumer::onConnected(AMQP::TcpConnection *connection) {
         qInfo() << "[AMQP] channel ready";
         emit ready();
     });
+
+    if (m_negotiatedHeartbeat > 0) {
+        m_heartbeatTimer.start(m_negotiatedHeartbeat * 500); // interval/2 в мс
+        qInfo() << "[AMQP] sending heartbeats every" << (m_negotiatedHeartbeat / 2) << "s";
+    }
 }
 
 void QtAmqpConsumer::onClosed(AMQP::TcpConnection * /*connection*/) {
     m_ready = false;
+    m_heartbeatTimer.stop();
     qInfo() << "[AMQP] connection closed";
     emit connectionClosed();
+    scheduleReconnect();
 }
 
 void QtAmqpConsumer::consume(const QString &queue, int prefetchCount, MessageHandler handler) {

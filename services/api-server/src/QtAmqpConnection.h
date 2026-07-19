@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QSocketNotifier>
 #include <QString>
+#include <QTimer>
 #include <QUrl>
 #include <memory>
 #include <unordered_map>
@@ -34,7 +35,6 @@ public:
     // трактовать это как временную недоступность брокера (503), а не как
     // "сообщение отправлено".
     bool publish(const QString &exchange, const QString &routingKey, const QByteArray &body);
-    uint16_t onNegotiate(AMQP::TcpConnection *connection, uint16_t interval) override;
 
 signals:
     void ready();
@@ -48,6 +48,16 @@ protected:
     void onConnected(AMQP::TcpConnection *connection) override;
     void onClosed(AMQP::TcpConnection *connection) override;
 
+    // ВАЖНО: этот callback только СОГЛАСОВЫВАЕТ интервал с брокером — сам по
+    // себе он не заставляет AMQP-CPP отправлять heartbeat-фреймы. Библиотека
+    // не делает это автоматически ни при каком значении, возвращённом
+    // отсюда; реальную отправку embedder обязан делать сам через
+    // connection->heartbeat() (см. m_heartbeatTimer ниже). Оставляем
+    // предложение сервера как есть (RabbitMQ по умолчанию — 60с), а не
+    // произвольно укорачиваем его: без реальной отправки укорачивание
+    // интервала только приближает разрыв, не устраняя причину.
+    uint16_t onNegotiate(AMQP::TcpConnection *connection, uint16_t interval) override;
+
 private:
     struct FdWatch {
         std::unique_ptr<QSocketNotifier> read;
@@ -55,6 +65,9 @@ private:
     };
 
     void onFdActivated(int fd, int flag);
+    void sendHeartbeat();
+    void scheduleReconnect();
+    void doConnect();
 
     // AMQP::TcpConnection НЕ наследуется от AMQP::Connection в этой версии
     // библиотеки (это и стало причиной reinterpret_cast в исходном коде).
@@ -64,4 +77,24 @@ private:
     std::unique_ptr<AMQP::TcpChannel> m_channel;
     std::unordered_map<int, FdWatch> m_watches;
     bool m_ready = false;
+
+    // Отправляет heartbeat на брокер на середине согласованного интервала
+    // (стандартная практика: запас на джиттер планировщика/сети, чтобы
+    // фрейм гарантированно пришёл раньше, чем брокер сочтёт соединение
+    // мёртвым). Без этого таймера RabbitMQ рвёт соединение по таймауту
+    // "missed heartbeats" ровно так, как было до этого фикса.
+    QTimer m_heartbeatTimer;
+    uint16_t m_negotiatedHeartbeat = 0;
+
+    // Автопереподключение. Никакой heartbeat не спасёт от разрыва, если
+    // процесс/хост был реально приостановлен (сон ноутбука, пауза Docker
+    // Desktop, вытеснение k8s-узла) дольше таймаута брокера — единственное
+    // осмысленное лечение тут не "не дать порваться", а "само
+    // восстановиться после разрыва". До этого фикса разорванное соединение
+    // оставалось мёртвым навсегда, и весь пайплайн сообщений вставал до
+    // ручного рестарта контейнера.
+    QUrl m_url;
+    QTimer m_reconnectTimer;
+    int m_reconnectDelayMs = 2000;      // стартовая задержка
+    static constexpr int kMaxReconnectDelayMs = 30000; // потолок бэкоффа
 };

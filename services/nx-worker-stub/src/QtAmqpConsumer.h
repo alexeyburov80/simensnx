@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QSocketNotifier>
 #include <QString>
+#include <QTimer>
 #include <QUrl>
 #include <functional>
 #include <memory>
@@ -63,6 +64,13 @@ protected:
     void onConnected(AMQP::TcpConnection *connection) override;
     void onClosed(AMQP::TcpConnection *connection) override;
 
+    // Только согласовывает интервал с брокером — реальную отправку делает
+    // m_heartbeatTimer, см. подробный комментарий в
+    // services/api-server/src/QtAmqpConnection.h (там же найден и починен
+    // этот баг: RabbitMQ рвал соединение по "missed heartbeats", потому что
+    // AMQP-CPP не отправляет heartbeat-фреймы сама по себе).
+    uint16_t onNegotiate(AMQP::TcpConnection *connection, uint16_t interval) override;
+
 private:
     struct FdWatch {
         std::unique_ptr<QSocketNotifier> read;
@@ -70,9 +78,24 @@ private:
     };
 
     void onFdActivated(int fd, int flag);
+    void sendHeartbeat();
+    void scheduleReconnect();
+    void doConnect();
 
     std::unique_ptr<AMQP::TcpConnection> m_connection;
     std::unique_ptr<AMQP::TcpChannel> m_channel;
     std::unordered_map<int, FdWatch> m_watches;
     bool m_ready = false;
+    QTimer m_heartbeatTimer;
+    uint16_t m_negotiatedHeartbeat = 0;
+
+    // См. подробный комментарий в services/api-server/src/QtAmqpConnection.h —
+    // без автопереподключения разорванное соединение (не важно, по какой
+    // причине — heartbeat, сетевой сбой, пауза контейнера) оставалось бы
+    // мёртвым навсегда, и воркер/оркестратор переставали бы забирать работу
+    // из очереди до ручного рестарта.
+    QUrl m_url;
+    QTimer m_reconnectTimer;
+    int m_reconnectDelayMs = 2000;
+    static constexpr int kMaxReconnectDelayMs = 30000;
 };

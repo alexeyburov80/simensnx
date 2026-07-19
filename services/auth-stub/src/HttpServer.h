@@ -6,7 +6,6 @@
 #include <QHash>
 #include <QRegularExpression>
 #include <functional>
-#include <memory>
 #include <vector>
 
 #include "HttpTypes.h"
@@ -22,29 +21,9 @@
 class HttpServer : public QObject {
     Q_OBJECT
 public:
-    using RespondFn = std::function<void(HttpResponse)>;
-    // Асинхронный обработчик: обязан вызвать respond() РОВНО ОДИН РАЗ,
-    // сразу (для простых маршрутов) или позже, из колбэка QNetworkReply/
-    // QSqlQuery и т.п. (для маршрутов, которым нужен внешний вызов —
-    // например, POST /jobs теперь дергает auth-stub и Postgres перед
-    // ответом). Синхронные маршруты не переписывались руками — см.
-    // addRoute()/addRoutePattern() ниже, обёртка делает это автоматически.
-    using Handler = std::function<void(const HttpRequest &, RespondFn respond)>;
-    using SyncHandler = std::function<HttpResponse(const HttpRequest &)>;
+    using Handler = std::function<HttpResponse(const HttpRequest &)>;
 
     explicit HttpServer(QObject *parent = nullptr);
-
-    // Регистрирует асинхронный обработчик для точного пути.
-    void addRoute(const QByteArray &method, const QString &path, Handler handler);
-    // Обёртка для старых синхронных обработчиков — respond() вызывается
-    // немедленно тем же значением, что раньше возвращалось из функции.
-    void addRoute(const QByteArray &method, const QString &path, SyncHandler handler);
-
-    // То же для маршрутов с параметром вида "/jobs/{id}".
-    void addRoutePattern(const QByteArray &method, const QRegularExpression &pattern, Handler handler);
-    void addRoutePattern(const QByteArray &method, const QRegularExpression &pattern, SyncHandler handler);
-
-    bool listen(const QHostAddress &address, quint16 port);
 
     // Верхняя граница Content-Length. Раньше подобной защиты не было нигде
     // в репозитории: любой сервис на cpp-httplib буферизовал тело целиком
@@ -52,6 +31,16 @@ public:
     // ждём, пока придёт всё тело гигантской загрузки, отклоняем сразу по
     // заголовку.
     void setMaxBodyBytes(qint64 maxBytes) { m_maxBodyBytes = maxBytes; }
+
+    // Регистрирует обработчик для точного пути ("/", "/health", ...).
+    void addRoute(const QByteArray &method, const QString &path, Handler handler);
+
+    // Регистрирует обработчик для пути с параметром вида "/jobs/{id}".
+    // В HttpRequest::path параметр не подставляется — обработчик сам
+    // получает его через захватывающую группу regexp (см. main.cpp).
+    void addRoutePattern(const QByteArray &method, const QRegularExpression &pattern, Handler handler);
+
+    bool listen(const QHostAddress &address, quint16 port);
 
 private slots:
     void onNewConnection();
@@ -69,12 +58,11 @@ private:
         bool headersParsed = false;
         qint64 contentLength = 0;
         int headerEnd = -1;
-        std::shared_ptr<bool> responded; // общий guard между dispatch() и таймаутом
     };
 
     void tryProcess(QTcpSocket *socket);
     void writeResponse(QTcpSocket *socket, const HttpResponse &resp);
-    void dispatch(const HttpRequest &req, QTcpSocket *socket);
+    HttpResponse dispatch(const HttpRequest &req);
 
     QTcpServer m_server;
     qint64 m_maxBodyBytes = 100LL * 1024 * 1024; // 100 МБ по умолчанию

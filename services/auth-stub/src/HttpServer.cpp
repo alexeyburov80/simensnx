@@ -1,7 +1,6 @@
 #include "HttpServer.h"
 
 #include <QRegularExpressionMatch>
-#include <QTimer>
 #include <iostream>
 
 HttpServer::HttpServer(QObject *parent) : QObject(parent) {
@@ -12,20 +11,8 @@ void HttpServer::addRoute(const QByteArray &method, const QString &path, Handler
     m_exactRoutes[path][method] = std::move(handler);
 }
 
-void HttpServer::addRoute(const QByteArray &method, const QString &path, SyncHandler handler) {
-    addRoute(method, path, Handler([handler](const HttpRequest &req, RespondFn respond) {
-        respond(handler(req));
-    }));
-}
-
 void HttpServer::addRoutePattern(const QByteArray &method, const QRegularExpression &pattern, Handler handler) {
     m_patternRoutes.push_back({method, pattern, std::move(handler)});
-}
-
-void HttpServer::addRoutePattern(const QByteArray &method, const QRegularExpression &pattern, SyncHandler handler) {
-    addRoutePattern(method, pattern, Handler([handler](const HttpRequest &req, RespondFn respond) {
-        respond(handler(req));
-    }));
 }
 
 bool HttpServer::listen(const QHostAddress &address, quint16 port) {
@@ -124,43 +111,18 @@ void HttpServer::tryProcess(QTcpSocket *socket) {
 
     req.body = st.buffer.mid(bodyStart, st.contentLength);
 
-    dispatch(req, socket);
+    const HttpResponse resp = dispatch(req);
+    writeResponse(socket, resp);
+    socket->disconnectFromHost();
 }
 
-void HttpServer::dispatch(const HttpRequest &req, QTcpSocket *socket) {
-    auto responded = std::make_shared<bool>(false);
-    m_connections[socket].responded = responded;
-
-    // respond() может сработать не сразу (auth-stub/Postgres-колбэк), а
-    // соединение к тому времени уже может быть закрыто клиентом — тогда
-    // socket удалён через deleteLater() и вычеркнут из m_connections.
-    // Проверка contains() перед обращением к сокету защищает именно от
-    // этого, а не от гонки потоков (Qt здесь однопоточный).
-    RespondFn respond = [this, socket, responded](HttpResponse resp) {
-        if (*responded || !m_connections.contains(socket)) return;
-        *responded = true;
-        writeResponse(socket, resp);
-        socket->disconnectFromHost();
-    };
-
-    // Защита от обработчика, который забыл позвать respond() (например,
-    // повис на сетевом вызове без собственного таймаута) — без этого
-    // соединение висело бы открытым бесконечно, утекая файловые дескрипторы.
-    auto *timeoutTimer = new QTimer(socket);
-    timeoutTimer->setSingleShot(true);
-    connect(timeoutTimer, &QTimer::timeout, this, [respond]() mutable {
-        respond(HttpResponse::json(504, "Gateway Timeout", R"({"error":"handler did not respond in time"})"));
-    });
-    timeoutTimer->start(15000);
-
+HttpResponse HttpServer::dispatch(const HttpRequest &req) {
     if (m_exactRoutes.contains(req.path)) {
         const auto &methodMap = m_exactRoutes[req.path];
         if (methodMap.contains(req.method)) {
-            methodMap[req.method](req, respond);
-            return;
+            return methodMap[req.method](req);
         }
-        respond(HttpResponse::json(405, "Method Not Allowed", R"({"error":"method not allowed"})"));
-        return;
+        return HttpResponse::json(405, "Method Not Allowed", R"({"error":"method not allowed"})");
     }
 
     for (const auto &route : m_patternRoutes) {
@@ -171,12 +133,11 @@ void HttpServer::dispatch(const HttpRequest &req, QTcpSocket *socket) {
             for (int i = 1; i <= m.lastCapturedIndex(); ++i) {
                 withParams.pathParams << m.captured(i);
             }
-            route.handler(withParams, respond);
-            return;
+            return route.handler(withParams);
         }
     }
 
-    respond(HttpResponse::json(404, "Not Found", R"({"error":"not found"})"));
+    return HttpResponse::json(404, "Not Found", R"({"error":"not found"})");
 }
 
 void HttpServer::writeResponse(QTcpSocket *socket, const HttpResponse &resp) {

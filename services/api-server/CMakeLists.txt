@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network)
+find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network Sql)
 
 # AMQP-CPP не пакетирован для Debian bookworm / Ubuntu 24.04 (проверено:
 # отсутствует в apt на обоих дистрибутивах на момент написания, появляется
@@ -37,4 +37,4 @@ add_executable(api-server
     src/QtAmqpConnection.cpp
 )
 
-target_link_libraries(api-server PRIVATE Qt5::Core Qt5::Network amqpcpp)
+target_link_libraries(api-server PRIVATE Qt5::Core Qt5::Network Qt5::Sql amqpcpp)

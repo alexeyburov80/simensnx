@@ -17,17 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-
-# Сначала удаляем старый кеш, если он есть, а затем собираем заново
 RUN rm -rf build && \
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --parallel
+
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libqt5core5a \
     libqt5network5 \
+    libqt5sql5-psql \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 

@@ -22,12 +22,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3.13-management
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-simensnx}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-simensnx}
+      RABBITMQ_LOAD_DEFINITIONS: "/etc/rabbitmq/definitions.json"
+    volumes:
+      - ./deploy/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - rabbitmqdata:/var/lib/rabbitmq
     ports:
       - "5672:5672"   # AMQP
       - "15672:15672" # management UI
@@ -36,18 +41,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   auth-stub:
     build: ./services/auth-stub
     environment:
       PORT: "8081"
-    depends_on:
-      - postgres
+    restart: unless-stopped
 
   license-server-stub:
     build: ./services/license-server-stub
     environment:
       PORT: "8083"
+    restart: unless-stopped
 
   file-storage-service:
     build: ./services/file-storage-service
@@ -55,11 +61,7 @@ services:
       PORT: "8084"
     volumes:
       - filestorage:/data
-
-  log-collector-stub:
-    build: ./services/log-collector-stub
-    environment:
-      PORT: "8085"
+    restart: unless-stopped
 
   job-orchestrator:
     build: ./services/job-orchestrator
@@ -72,6 +74,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    restart: unless-stopped
 
   api-server:
     build: ./services/api-server
@@ -89,6 +92,7 @@ services:
         condition: service_healthy
       auth-stub:
         condition: service_started
+    restart: unless-stopped
 
   # Локальная линуксовая заглушка для проверки протокола.
   # Реальный воркер — Windows, вне docker-compose/k8s. См. services/nx-worker-stub/README.md
@@ -105,7 +109,48 @@ services:
         condition: service_started
       license-server-stub:
         condition: service_started
+    restart: unless-stopped
+
+  # --- Логирование: каждый сервис пишет только в свой stdout (уже так и
+  # есть, через qInfo()/qWarning()) — забирает и агрегирует логи Promtail,
+  # push-модель через отдельный log-collector-stub сознательно не используется
+  # (см. docs/adr/0003-logging-pull-not-push.md).
+  loki:
+    image: grafana/loki:2.9.8
+    ports:
+      - "3100:3100"
+    volumes:
+      - lokidata:/loki
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    volumes:
+      - ./deploy/observability/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - ./deploy/observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - loki
+    restart: unless-stopped
 
 volumes:
   pgdata:
   filestorage:
+  rabbitmqdata:
+  lokidata:
+  grafanadata:

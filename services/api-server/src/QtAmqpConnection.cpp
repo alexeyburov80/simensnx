@@ -116,7 +116,20 @@ void QtAmqpConnection::onConnected(AMQP::TcpConnection *connection) {
     m_channel->onReady([this]() {
         m_channel->declareQueue("jobs.process", AMQP::durable);
         m_channel->declareQueue("jobs.validate", AMQP::durable);
+
+        // jobs.dlq раньше объявлялась, но ничего в неё реально не
+        // попадало — не было ни одного места, которое настраивало бы
+        // мёртвые письма именно сюда. Реальная маршрутизация делается
+        // RabbitMQ policy (deploy/rabbitmq/definitions.json), а не
+        // аргументами очереди в коде: policy можно накладывать на уже
+        // существующие очереди без пересоздания и без риска, что
+        // publisher и consumer объявят одну и ту же очередь с разными
+        // аргументами (RabbitMQ требует их побитового совпадения и рвёт
+        // канал при расхождении — а jobs.process/jobs.validate объявляют
+        // и api-server, и nx-worker-stub независимо).
+        m_channel->declareExchange("jobs.dlx", AMQP::fanout, AMQP::durable);
         m_channel->declareQueue("jobs.dlq", AMQP::durable);
+        m_channel->bindQueue("jobs.dlx", "jobs.dlq", "");
 
         // Отдельный fanout-обменник для "событий о создании задачи" —
         // job-orchestrator подписан на него своей очередью и пишет
@@ -151,5 +164,11 @@ void QtAmqpConnection::onClosed(AMQP::TcpConnection * /*connection*/) {
 
 bool QtAmqpConnection::publish(const QString &exchange, const QString &routingKey, const QByteArray &body) {
     if (!m_ready || !m_channel) return false;
-    return m_channel->publish(exchange.toStdString(), routingKey.toStdString(), body.constData(), body.size());
+    // persistent=true — RabbitMQ пишет сообщение на диск, а не только в
+    // памяти. Без этого durable-очередь переживёт рестарт брокера, а вот
+    // сообщения внутри неё — нет: durable описывает саму очередь, а не
+    // содержимое. Раньше это нигде не выставлялось.
+    AMQP::Envelope envelope(body.constData(), body.size());
+    envelope.setPersistent(true);
+    return m_channel->publish(exchange.toStdString(), routingKey.toStdString(), envelope);
 }

@@ -26,7 +26,6 @@
 - [ ] `license-server-stub`: `/checkout` и `/checkin` возвращают фиктивный
       токен с TTL
 - [ ] `file-storage-service`: upload/download/list поверх локального PV
-- [ ] `log-collector-stub`: принимает лог-сообщения, пишет в stdout/файл
 
 ## Phase 1 — Инфраструктура становится настоящей
 
@@ -36,8 +35,10 @@
       Cluster Operator, нагрузочный тест на потерю ноды
 - [ ] Секреты: заменить голые k8s Secrets на Vault + External Secrets
       Operator (или облачный секрет-менеджер, если деплой в облако)
-- [ ] Observability: заменить `log-collector-stub` на Loki/ELK + Grafana,
-      добавить метрики очереди и воркеров (Prometheus)
+- [x] Observability: логи — Promtail/Loki/Grafana поверх stdout контейнеров
+      (сделано раньше срока в Phase 0, см. `docs/adr/0003-logging-pull-not-push.md`;
+      `log-collector-stub` из push-модели никогда не понадобился).
+      Метрики очереди и воркеров (Prometheus) — ещё нет.
 - [ ] Backup/DR: Velero для бэкапа состояния кластера и снапшотов PV
 
 ## Phase 2 — Бизнес-логика: обработка и валидация моделей

@@ -169,5 +169,10 @@ void QtAmqpConsumer::declareCompletionExchange(const QString &exchange) {
 
 bool QtAmqpConsumer::publish(const QString &exchange, const QString &routingKey, const QByteArray &body) {
     if (!m_ready || !m_channel) return false;
-    return m_channel->publish(exchange.toStdString(), routingKey.toStdString(), body.constData(), body.size());
+    // persistent=true — см. подробный комментарий в
+    // services/api-server/src/QtAmqpConnection.cpp: durable-очередь без
+    // этого флага переживёт рестарт брокера, а сообщения внутри — нет.
+    AMQP::Envelope envelope(body.constData(), body.size());
+    envelope.setPersistent(true);
+    return m_channel->publish(exchange.toStdString(), routingKey.toStdString(), envelope);
 }

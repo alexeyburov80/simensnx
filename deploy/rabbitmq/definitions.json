@@ -1,0 +1,14 @@
+{
+  "policies": [
+    {
+      "name": "jobs-dead-lettering",
+      "vhost": "/",
+      "pattern": "^jobs\\.(process|validate|orchestrator\\..*)$",
+      "apply-to": "queues",
+      "definition": {
+        "dead-letter-exchange": "jobs.dlx"
+      },
+      "priority": 0
+    }
+  ]
+}

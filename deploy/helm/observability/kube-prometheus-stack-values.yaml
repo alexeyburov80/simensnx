@@ -1,0 +1,87 @@
+# values для community-чарта kube-prometheus-stack
+# (репозиторий https://prometheus-community.github.io/helm-charts, чарт kube-prometheus-stack)
+#
+# Устанавливать так:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n observability --create-namespace \
+#     -f deploy/helm/observability/kube-prometheus-stack-values.yaml
+#
+# Почему community chart, а не свой: тот же принцип, что для postgres/rabbitmq
+# (см. deploy/helm/postgres/TODO.md, deploy/helm/rabbitmq/TODO.md) — Prometheus
+# Operator, ServiceMonitor CRD, все алерты и дашборды по умолчанию уже
+# написаны и годами поддерживаются, переписывать нет смысла.
+
+prometheus:
+  prometheusSpec:
+    # Раз в кластере уже есть подходящие поды по аннотации (см.
+    # prometheus.io/scrape в deploy/helm/*/templates/deployment.yaml),
+    # ServiceMonitorSelector можно оставить широким — подхватит ServiceMonitor
+    # ниже автоматически по всем неймспейсам.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    retention: 15d
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { cpu: "1", memory: 1Gi }
+
+grafana:
+  adminPassword: "" # задать через --set или отдельный Secret, не хранить в git
+  defaultDashboardsEnabled: true
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      url: http://loki-gateway.observability.svc.cluster.local
+      access: proxy
+  # Готовые дашборды под наши метрики — см.
+  # deploy/observability/grafana-dashboards/*.json, монтируются через
+  # ConfigMap с лейблом grafana_dashboard: "1" (sidecar сам подхватывает).
+
+alertmanager:
+  enabled: true
+  # Конкретные правила алертов (глубина очереди, доля dead_letter,
+  # отсутствие heartbeat от api-server) — Phase 1+, пока не заведены.
+
+# ServiceMonitor на каждый наш сервис — альтернатива аннотациям
+# prometheus.io/scrape для kube-prometheus-stack (Prometheus Operator по
+# умолчанию ищет именно ServiceMonitor, а не голые аннотации). Простое
+# перечисление вместо helper-шаблона — сервисов всего 6, не оправдывает
+# добавление отдельного under-chart ради DRY.
+additionalServiceMonitors:
+  - name: api-server
+    selector:
+      matchLabels: { app: api-server }
+    endpoints:
+      - port: "8080"
+        path: /metrics
+        interval: 10s
+  - name: job-orchestrator
+    selector:
+      matchLabels: { app: job-orchestrator }
+    endpoints:
+      - port: "8082"
+        path: /metrics
+        interval: 10s
+  - name: auth-stub
+    selector:
+      matchLabels: { app: auth-stub }
+    endpoints:
+      - port: "8081"
+        path: /metrics
+        interval: 30s
+  - name: license-server-stub
+    selector:
+      matchLabels: { app: license-server-stub }
+    endpoints:
+      - port: "8083"
+        path: /metrics
+        interval: 10s
+  - name: file-storage-service
+    selector:
+      matchLabels: { app: file-storage-service }
+    endpoints:
+      - port: "8084"
+        path: /metrics
+        interval: 30s
+  # nx-worker-stub — вне k8s (Windows VM/сервер, см. docs/adr/0002), сюда не
+  # входит. Метрики с него в k8s-Prometheus не долетают без federation/
+  # pushgateway — открытый вопрос, не решён (см. README.md в этой папке).

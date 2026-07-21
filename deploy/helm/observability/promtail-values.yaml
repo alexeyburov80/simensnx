@@ -1,0 +1,12 @@
+# values для community-чарта promtail (https://grafana.github.io/helm-charts, чарт promtail)
+# Ставится как DaemonSet — по поду на каждую ноду, читает
+# /var/log/pods/*/*/*.log (прямой аналог того, что в docker-compose делает
+# Docker service discovery через /var/run/docker.sock — см.
+# docs/adr/0003-logging-pull-not-push.md, идея та же, механизм под k8s другой).
+
+config:
+  clients:
+    - url: http://loki-gateway.observability.svc.cluster.local/loki/api/v1/push
+  snippets:
+    pipelineStages:
+      - cri: {} # логи подов в кластере в формате CRI (containerd/CRI-O) — не Docker json-file, как в compose

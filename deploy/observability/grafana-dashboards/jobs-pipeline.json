@@ -1,0 +1,115 @@
+{
+  "title": "SimensNX — Jobs Pipeline",
+  "uid": "simensnx-jobs-pipeline",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Jobs published (api-server)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(api_jobs_published_total[5m])) by (job_type)",
+          "legendFormat": "{{job_type}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Idempotent replays vs new jobs",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(api_jobs_published_total[5m]))", "legendFormat": "new jobs" },
+        { "expr": "sum(rate(api_idempotent_replays_total[5m]))", "legendFormat": "idempotent replays" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Job status events (job-orchestrator)",
+      "description": "queued -> processing -> done|failed. Резкий рост failed без соответствующего роста done — сигнал проблемы у воркера или зависимостей.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(orchestrator_status_events_total[5m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Retries vs dead-lettered",
+      "description": "dead_letter означает, что задача исчерпала max_attempts — конечное состояние, требует ручного разбора.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(orchestrator_jobs_retried_total[5m])) by (job_type)", "legendFormat": "retried: {{job_type}}" },
+        { "expr": "sum(rate(orchestrator_jobs_dead_lettered_total[5m])) by (job_type)", "legendFormat": "dead_letter: {{job_type}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Stuck jobs found by sweep",
+      "description": "job-orchestrator: воркер взял задачу (processing) и не ответил ни done, ни failed за JOB_STUCK_TIMEOUT_SECONDS.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(orchestrator_stuck_jobs_total[15m]))", "legendFormat": "stuck/15m" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Worker: jobs completed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(worker_jobs_completed_total[5m])) by (job_type, result)", "legendFormat": "{{job_type}}/{{result}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "License seats in use",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "license_seats_in_use", "legendFormat": "in use" },
+        { "expr": "license_seats_total", "legendFormat": "total" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "title": "License checkout retries (waiting for a free seat)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(worker_license_checkout_retries_total[5m]))", "legendFormat": "retries/s" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Auth check failures (api-server -> auth-stub)",
+      "description": "Ненулевое значение означает, что auth-stub был недоступен — задачи в этот момент НЕ публиковались (fail closed).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(api_auth_check_failures_total[5m]))", "legendFormat": "failures/s" }
+      ]
+    }
+  ]
+}

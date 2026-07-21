@@ -1,25 +1,34 @@
+{{- if gt (.Values.replicaCount | int) 1 }}
+{{- fail "job-orchestrator: replicaCount > 1 не поддерживается — гонка на именованных consumer-очередях jobs.orchestrator.*, см. docs/SCALING.md. Это не гипотетический риск, а баг, который был реально пойман и воспроизведён." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-server
+  name: job-orchestrator
   labels:
-    app: api-server
+    app: job-orchestrator
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    # Recreate, а не RollingUpdate: с 1 репликой rolling update на короткое
+    # время создал бы ВТОРОЙ под до того, как первый погашен — то есть ровно
+    # ту ситуацию с двумя consumer'ами на одних очередях, от которой guard
+    # выше защищает при явном масштабировании, но не защищает от deploy.
+    type: Recreate
   selector:
     matchLabels:
-      app: api-server
+      app: job-orchestrator
   template:
     metadata:
       labels:
-        app: api-server
+        app: job-orchestrator
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ .Values.service.port }}"
         prometheus.io/path: "/metrics"
     spec:
       containers:
-        - name: api-server
+        - name: job-orchestrator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -29,10 +38,6 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          # /health реально проверяет PostgreSQL и готовность AMQP-канала
-          # (см. services/api-server/src/main.cpp), а не всегда отвечает
-          # "healthy" — раньше в чарте вообще не было проб, kubelet не мог
-          # понять, что под завис с мёртвым соединением к RabbitMQ.
           readinessProbe:
             httpGet:
               path: /health
@@ -42,7 +47,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /
+              path: /health
               port: {{ .Values.service.port }}
             initialDelaySeconds: 10
             periodSeconds: 15

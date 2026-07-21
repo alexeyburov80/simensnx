@@ -1,0 +1,31 @@
+image:
+  repository: simensnx/job-orchestrator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# СТРОГО 1 реплика. Второй под будет конкурировать за именованные очереди
+# jobs.orchestrator.intake/jobs.orchestrator.status с первым (round-robin
+# между consumer'ами одной очереди — штатное поведение RabbitMQ) — событие
+# создания задачи и событие её завершения для ОДНОГО job_id могут достаться
+# разным подам. Мы поймали это вживую: см. docs/SCALING.md, раздел про
+# job-orchestrator, и историю "completion for unknown job" в логах.
+# deployment.yaml ниже откажется рендериться, если тут больше 1.
+replicaCount: 1
+
+service:
+  port: 8082
+
+env:
+  PORT: "8082"
+  JOB_STUCK_TIMEOUT_SECONDS: "120"
+  # DATABASE_URL и RABBITMQ_URL — прокинуть через Secret, не хардкодить
+  # (см. ROADMAP.md — Phase 1: секреты через Vault/External Secrets Operator),
+  # аналогично api-server/values.yaml.
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

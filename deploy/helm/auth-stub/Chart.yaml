@@ -1,0 +1,6 @@
+apiVersion: v2
+name: auth-stub
+description: SimensNX auth-stub — Phase 0 заглушка аутентификации (всегда пропускает, реальный сетевой вызов)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

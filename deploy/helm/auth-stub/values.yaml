@@ -1,0 +1,20 @@
+image:
+  repository: simensnx/auth-stub
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  port: 8081
+
+env:
+  PORT: "8081"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

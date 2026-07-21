@@ -1,0 +1,33 @@
+# values для community-чарта loki (https://grafana.github.io/helm-charts, чарт loki)
+#
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm install loki grafana/loki -n observability -f deploy/helm/observability/loki-values.yaml
+#   helm install promtail grafana/promtail -n observability -f deploy/helm/observability/promtail-values.yaml
+
+deploymentMode: SingleBinary # монолитный режим — нашему масштабу (6 сервисов) распределённый Loki не нужен
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 20Gi
+
+# read/write/backend компоненты распределённого режима не нужны при
+# deploymentMode: SingleBinary — явно выключены, чтобы helm install не
+# попытался поднять их с нулевыми ресурсами по умолчанию.
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+gateway:
+  enabled: true

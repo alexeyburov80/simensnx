@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-server
+  name: auth-stub
   labels:
-    app: api-server
+    app: auth-stub
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: api-server
+      app: auth-stub
   template:
     metadata:
       labels:
-        app: api-server
+        app: auth-stub
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ .Values.service.port }}"
         prometheus.io/path: "/metrics"
     spec:
       containers:
-        - name: api-server
+        - name: auth-stub
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -29,23 +29,17 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          # /health реально проверяет PostgreSQL и готовность AMQP-канала
-          # (см. services/api-server/src/main.cpp), а не всегда отвечает
-          # "healthy" — раньше в чарте вообще не было проб, kubelet не мог
-          # понять, что под завис с мёртвым соединением к RabbitMQ.
           readinessProbe:
             httpGet:
               path: /health
               port: {{ .Values.service.port }}
-            initialDelaySeconds: 5
+            initialDelaySeconds: 3
             periodSeconds: 10
-            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /
+              path: /health
               port: {{ .Values.service.port }}
-            initialDelaySeconds: 10
+            initialDelaySeconds: 5
             periodSeconds: 15
-            failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: license-server-stub
+description: SimensNX license-server-stub — Phase 0 in-memory пул лицензий с TTL (не переживает рестарт, см. LicensePool.h)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

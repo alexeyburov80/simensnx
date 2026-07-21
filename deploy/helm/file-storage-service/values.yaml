@@ -1,0 +1,32 @@
+image:
+  repository: simensnx/file-storage-service
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# > 1 реплики требуют ReadWriteMany PVC (см. persistence.accessMode ниже) —
+# большинство cloud-провайдеров по умолчанию дают ReadWriteOnce, который
+# можно смонтировать только на одном узле одновременно. Со стандартным RWO
+# держите 1 реплику, иначе поды на разных нодах не смогут примонтировать
+# один и тот же volume.
+replicaCount: 1
+
+service:
+  port: 8084
+
+env:
+  PORT: "8084"
+  STORAGE_DIR: "/data"
+  MAX_UPLOAD_BYTES: "104857600" # 100 МБ
+
+persistence:
+  size: 20Gi
+  accessMode: ReadWriteOnce
+  storageClassName: "" # пусто — StorageClass по умолчанию в кластере
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

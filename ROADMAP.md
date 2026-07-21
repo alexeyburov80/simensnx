@@ -12,7 +12,15 @@
 - [x] Структура монорепозитория
 - [x] docker-compose для локальной разработки
 - [x] Схема PostgreSQL: `jobs`, `job_attempts`
-- [ ] Helm-чарты для всех сервисов (базовые Deployment/Service, без HPA/PDB)
+- [x] Helm-чарты для всех сервисов, кроме `nx-worker-stub` (сознательно —
+      он вне k8s, см. `docs/adr/0002-windows-worker-outside-k8s.md`) —
+      Deployment/Service, без HPA/PDB, как и планировалось; `job-orchestrator`
+      и `license-server-stub` дополнительно защищены от `replicaCount > 1`
+      прямо в шаблоне (`{{ fail ... }}`) — см. `docs/SCALING.md` за
+      объяснением, почему это не просто перестраховка. `postgres`/`rabbitmq` —
+      по-прежнему через community-операторы, не свои чарты (см. их `TODO.md`).
+      Observability (Prometheus/Grafana/Loki) — `deploy/helm/observability/`,
+      тоже через community-чарты, не свои.
 - [x] `api-server`: эндпоинты `POST /jobs`, `GET /jobs/{id}` — реальные данные
       (не фиктивные, как планировалось изначально), по контракту в
       `services/api-server/openapi.yaml` (валидна по OpenAPI 3.0.3,

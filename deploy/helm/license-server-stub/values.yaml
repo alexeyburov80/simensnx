@@ -1,0 +1,26 @@
+image:
+  repository: simensnx/license-server-stub
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Строго 1 реплика: пул лицензий — in-memory состояние конкретного процесса
+# (см. LicensePool.h). Два пода = два независимых пула по LICENSE_SEATS
+# каждый, а не общий пул на двоих — ограничение перестанет что-либо
+# ограничивать. См. docs/SCALING.md.
+replicaCount: 1
+
+service:
+  port: 8083
+
+env:
+  PORT: "8083"
+  LICENSE_SEATS: "3"
+  LICENSE_TTL_SECONDS: "300"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

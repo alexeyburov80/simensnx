@@ -169,6 +169,8 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
     volumes:
       - ./deploy/observability/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./deploy/observability/grafana-dashboards-provider.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./deploy/observability/grafana-dashboards:/var/lib/grafana/dashboards:ro
       - grafanadata:/var/lib/grafana
     depends_on:
       - loki

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: file-storage-service
+description: SimensNX file-storage-service — HTTP-хранилище файлов поверх PersistentVolume (Phase 0, S3-совместимый контракт под будущий MinIO)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

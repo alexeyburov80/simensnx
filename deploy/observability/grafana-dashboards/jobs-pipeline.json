@@ -33,14 +33,14 @@
     },
     {
       "id": 3,
-      "title": "Job status events (job-orchestrator)",
+      "title": "Job status events (job-state-service)",
       "description": "queued -> processing -> done|failed. Резкий рост failed без соответствующего роста done — сигнал проблемы у воркера или зависимостей.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "sum(rate(orchestrator_status_events_total[5m])) by (status)",
+          "expr": "sum(rate(job_state_status_events_total[5m])) by (status)",
           "legendFormat": "{{status}}"
         }
       ]
@@ -53,19 +53,19 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        { "expr": "sum(rate(orchestrator_jobs_retried_total[5m])) by (job_type)", "legendFormat": "retried: {{job_type}}" },
-        { "expr": "sum(rate(orchestrator_jobs_dead_lettered_total[5m])) by (job_type)", "legendFormat": "dead_letter: {{job_type}}" }
+        { "expr": "sum(rate(job_state_jobs_retried_total[5m])) by (job_type)", "legendFormat": "retried: {{job_type}}" },
+        { "expr": "sum(rate(job_state_jobs_dead_lettered_total[5m])) by (job_type)", "legendFormat": "dead_letter: {{job_type}}" }
       ]
     },
     {
       "id": 5,
       "title": "Stuck jobs found by sweep",
-      "description": "job-orchestrator: воркер взял задачу (processing) и не ответил ни done, ни failed за JOB_STUCK_TIMEOUT_SECONDS.",
+      "description": "job-state-service: воркер взял задачу (processing) и не ответил ни done, ни failed за JOB_STUCK_TIMEOUT_SECONDS.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
-        { "expr": "sum(rate(orchestrator_stuck_jobs_total[15m]))", "legendFormat": "stuck/15m" }
+        { "expr": "sum(rate(job_state_stuck_jobs_total[15m]))", "legendFormat": "stuck/15m" }
       ]
     },
     {

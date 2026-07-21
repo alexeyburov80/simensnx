@@ -6,7 +6,7 @@ info:
     их постановка в очередь и чтение статуса. Аутентификация — через auth-stub
     (Phase 0: всегда пропускает, но настоящий сетевой вызов — см. `docs/adr/`).
     Владелец данных о задачах — PostgreSQL, таблица `jobs`; api-server только
-    читает её для `GET /jobs/{id}`, пишет туда исключительно `job-orchestrator`.
+    читает её для `GET /jobs/{id}`, пишет туда исключительно `job-state-service`.
   version: "0.1.0"
   license:
     name: Internal
@@ -78,7 +78,7 @@ paths:
         `job_id`, что и в первый раз (`idempotent_replay: true`);
         (3) иначе генерируется новый `job_id` (UUID), сообщение публикуется
         в `jobs.process`/`jobs.validate` (RabbitMQ) и копией — в fanout
-        `jobs.events`, откуда его заберёт `job-orchestrator` и создаст
+        `jobs.events`, откуда его заберёт `job-state-service` и создаст
         строку в PostgreSQL.
       requestBody:
         required: true
@@ -125,7 +125,7 @@ paths:
     get:
       tags: [jobs]
       summary: Текущий статус задачи
-      description: Читает состояние напрямую из PostgreSQL (таблица `jobs`, владелец записи — `job-orchestrator`).
+      description: Читает состояние напрямую из PostgreSQL (таблица `jobs`, владелец записи — `job-state-service`).
       parameters:
         - name: id
           in: path
@@ -206,7 +206,7 @@ components:
           description: |
             queued → processing → done, либо queued → processing → failed →
             (retry: снова queued) → ... → dead_letter после исчерпания
-            max_attempts. Полный цикл реализован в job-orchestrator.
+            max_attempts. Полный цикл реализован в job-state-service.
         input_file_ref: { type: string }
         result_file_ref: { type: string, nullable: true }
         error_message: { type: string, nullable: true }

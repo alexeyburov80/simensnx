@@ -80,7 +80,7 @@ bool openDatabase(const QUrl &databaseUrl) {
 
 // Единственное место в api-server, которое трогает Postgres — и это
 // осознанно только SELECT. Запись в jobs остаётся исключительно за
-// job-orchestrator (см. его README) — двух писателей в одну таблицу не
+// job-state-service (см. его README) — двух писателей в одну таблицу не
 // заводим. Нужен этот SELECT для двух вещей: проверки идемпотентности
 // ДО публикации в очередь (см. POST /jobs) и реального GET /jobs/{id}
 // вместо прежней заглушки "status: unknown".
@@ -234,7 +234,7 @@ int main(int argc, char *argv[]) {
 
         // Контракт приведён в соответствие со схемой jobs (db/migrations/0001_init.sql):
         // client_id и input_file_ref там NOT NULL, а поля model_id в схеме
-        // вообще нет — использовать его для job-orchestrator было бы нечем.
+        // вообще нет — использовать его для job-state-service было бы нечем.
         const QString clientId = obj.value("client_id").toString();
         const QString jobType = obj.value("job_type").toString();
         const QString inputFileRef = obj.value("input_file_ref").toString();
@@ -269,7 +269,7 @@ int main(int argc, char *argv[]) {
             }
 
             // Идемпотентность ДО публикации, а не после (как было раньше,
-            // когда job-orchestrator ловил дубль постфактум в БД, а в
+            // когда job-state-service ловил дубль постфактум в БД, а в
             // очередь уже улетали два разных job_id на одну и ту же
             // клиентскую отправку). Теперь при повторе с тем же
             // idempotency_key ничего заново не публикуется — клиенту
@@ -317,7 +317,7 @@ int main(int argc, char *argv[]) {
             metrics.inc("api_jobs_published_total", "Total jobs successfully published to a work queue", {{"job_type", jobType}});
 
             // Копия того же сообщения — в fanout jobs.events, чтобы
-            // job-orchestrator узнал о задаче и сохранил её в PostgreSQL.
+            // job-state-service узнал о задаче и сохранил её в PostgreSQL.
             // Не влияет на успешность основного publish выше: если эта
             // публикация не удастся, job всё равно уйдёт в обработку,
             // просто запись в БД появится с опозданием (или после ручной
@@ -335,7 +335,7 @@ int main(int argc, char *argv[]) {
     static const QRegularExpression jobIdPattern(R"(^/jobs/([0-9a-fA-F-]{36})$)");
     server.addRoutePattern("GET", jobIdPattern, [](const HttpRequest &req) -> HttpResponse {
         // Реальное чтение из Postgres — раньше здесь всегда возвращался
-        // фиктивный "status": "unknown". job-orchestrator теперь пишет
+        // фиктивный "status": "unknown". job-state-service теперь пишет
         // состояние по-настоящему (см. его README), так что читать можно.
         QSqlQuery q;
         q.prepare("SELECT id, client_id, job_type, status, input_file_ref, result_file_ref, "

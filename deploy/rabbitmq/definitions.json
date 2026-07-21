@@ -3,7 +3,7 @@
     {
       "name": "jobs-dead-lettering",
       "vhost": "/",
-      "pattern": "^jobs\\.(process|validate|orchestrator\\..*)$",
+      "pattern": "^jobs\\.(process|validate|job-state-service\\..*)$",
       "apply-to": "queues",
       "definition": {
         "dead-letter-exchange": "jobs.dlx"

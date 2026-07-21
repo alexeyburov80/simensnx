@@ -1,0 +1,56 @@
+{{- if gt (.Values.replicaCount | int) 1 }}
+{{- fail "job-state-service: replicaCount > 1 не поддерживается — гонка на именованных consumer-очередях jobs.job-state-service.*, см. docs/SCALING.md. Это не гипотетический риск, а баг, который был реально пойман и воспроизведён." }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-state-service
+  labels:
+    app: job-state-service
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # Recreate, а не RollingUpdate: с 1 репликой rolling update на короткое
+    # время создал бы ВТОРОЙ под до того, как первый погашен — то есть ровно
+    # ту ситуацию с двумя consumer'ами на одних очередях, от которой guard
+    # выше защищает при явном масштабировании, но не защищает от deploy.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: job-state-service
+  template:
+    metadata:
+      labels:
+        app: job-state-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.service.port }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: job-state-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

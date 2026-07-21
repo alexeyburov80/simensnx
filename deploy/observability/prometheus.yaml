@@ -5,9 +5,9 @@ scrape_configs:
   - job_name: api-server
     static_configs:
       - targets: ["api-server:8080"]
-  - job_name: job-orchestrator
+  - job_name: job-state-service
     static_configs:
-      - targets: ["job-orchestrator:8082"]
+      - targets: ["job-state-service:8082"]
   - job_name: nx-worker-stub
     static_configs:
       - targets: ["nx-worker-stub:8085"]

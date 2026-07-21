@@ -132,8 +132,8 @@ void QtAmqpConnection::onConnected(AMQP::TcpConnection *connection) {
         m_channel->bindQueue("jobs.dlx", "jobs.dlq", "");
 
         // Отдельный fanout-обменник для "событий о создании задачи" —
-        // job-orchestrator подписан на него своей очередью и пишет
-        // состояние в PostgreSQL (см. services/job-orchestrator).
+        // job-state-service подписан на него своей очередью и пишет
+        // состояние в PostgreSQL (см. services/job-state-service).
         // Существующие jobs.process/jobs.validate трогать не пришлось:
         // nx-worker-stub как забирал работу оттуда напрямую, так и
         // продолжает, ничего в его поведении не поменялось.

@@ -135,9 +135,9 @@ void checkinLicense(QNetworkAccessManager &nam, const QUrl &licenseServerUrl, co
 }
 
 // Публикует событие о смене статуса задачи (processing/done/failed) в
-// fanout jobs.status, которое подхватывает job-orchestrator и переносит в
+// fanout jobs.status, которое подхватывает job-state-service и переносит в
 // PostgreSQL. Сам воркер таблицу jobs никогда не трогает — единственный
-// владелец БД в системе остаётся job-orchestrator, см. его README.
+// владелец БД в системе остаётся job-state-service, см. его README.
 //
 // Обменник называется jobs.status, а не jobs.completed (как было раньше) —
 // он теперь несёт не только финальные события (done/failed), но и
@@ -218,7 +218,7 @@ int main(int argc, char *argv[]) {
             // недостающее звено между 'queued' и 'done'/'failed', которое
             // раньше нигде не проставлялось, хотя колонка под него была в
             // схеме с самого начала (db/migrations/0001_init.sql). Заодно
-            // это событие, по которому job-orchestrator считает попытки
+            // это событие, по которому job-state-service считает попытки
             // (attempt_count) — см. его main.cpp.
             publishStatus(amqp, jobId, "processing");
 

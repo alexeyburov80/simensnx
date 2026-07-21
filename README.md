@@ -9,12 +9,16 @@ simensnx/
 ├── README.md               — этот файл
 ├── ARCHITECTURE.md         — описание компонентов и их взаимодействия
 ├── ROADMAP.md              — план перехода от заглушек к реальной реализации
+├── docs/
+│   ├── adr/                 — architecture decision records
+│   ├── SCALING.md           — какие сервисы можно масштабировать, какие нет
+│   └── ADDING_A_SERVICE.md  — как добавить новый сервис/очередь по шаблону
 ├── docker-compose.yml      — локальное окружение для разработки (не прод!)
 ├── .env.example            — пример переменных окружения
 ├── services/                — исходники всех сервисов (кроме NX-воркера — Windows-контур)
 │   ├── api-server/          — HTTP API для клиентов
 │   ├── auth-stub/           — заглушка авторизации/аутентификации
-│   ├── job-orchestrator/    — управление жизненным циклом задач, ретраи
+│   ├── job-state-service/    — управление жизненным циклом задач, ретраи
 │   ├── license-server-stub/ — заглушка Siemens license server
 │   ├── file-storage-service/— HTTP-обёртка над файловым хранилищем
 │   ├── log-collector-stub/  — заглушка сбора логов

@@ -63,8 +63,8 @@ services:
       - filestorage:/data
     restart: unless-stopped
 
-  job-orchestrator:
-    build: ./services/job-orchestrator
+  job-state-service:
+    build: ./services/job-state-service
     environment:
       PORT: "8082"
       DATABASE_URL: postgres://${POSTGRES_USER:-simensnx}:${POSTGRES_PASSWORD:-simensnx}@postgres:5432/${POSTGRES_DB:-simensnx}

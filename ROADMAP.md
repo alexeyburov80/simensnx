@@ -14,7 +14,7 @@
 - [x] Схема PostgreSQL: `jobs`, `job_attempts`
 - [x] Helm-чарты для всех сервисов, кроме `nx-worker-stub` (сознательно —
       он вне k8s, см. `docs/adr/0002-windows-worker-outside-k8s.md`) —
-      Deployment/Service, без HPA/PDB, как и планировалось; `job-orchestrator`
+      Deployment/Service, без HPA/PDB, как и планировалось; `job-state-service`
       и `license-server-stub` дополнительно защищены от `replicaCount > 1`
       прямо в шаблоне (`{{ fail ... }}`) — см. `docs/SCALING.md` за
       объяснением, почему это не просто перестраховка. `postgres`/`rabbitmq` —
@@ -28,7 +28,7 @@
       (Swagger UI, см. `docker-compose.yml`)
 - [ ] `auth-stub`: всегда пропускает запрос, но с реальным сетевым вызовом
       (чтобы protocol/latency были видны сразу)
-- [x] `job-orchestrator`: пишет и читает состояние в PostgreSQL; retry-цикл
+- [x] `job-state-service`: пишет и читает состояние в PostgreSQL; retry-цикл
       с backoff и dead_letter реализован раньше срока (был в Phase 1, см. ниже)
 - [ ] `rabbitmq`: поднят как single-node (compose) / 3-node через Cluster
       Operator (k8s), очереди созданы, DLX настроен
@@ -37,6 +37,7 @@
 - [ ] `license-server-stub`: `/checkout` и `/checkin` возвращают фиктивный
       токен с TTL
 - [ ] `file-storage-service`: upload/download/list поверх локального PV
+- [ ] Нужно добавить проект unit тестов QTest отдельно от основного кода
 
 ## Phase 1 — Инфраструктура становится настоящей
 
@@ -67,7 +68,7 @@
       уровне заглушки — `nx-worker-stub` ретраит `/checkout` с бэкоффом
       вместо мгновенного провала задачи; при переходе на настоящий FlexLM
       этот механизм переиспользуется как есть.
-- [x] `job-orchestrator`: retry с backoff (queued → processing → done|failed →
+- [x] `job-state-service`: retry с backoff (queued → processing → done|failed →
       retry или dead_letter, attempt_count/max_attempts) и sweep зависших в
       processing задач по таймауту — сделано. Идемпотентность по
       `idempotency_key` тоже сделана (проверка в api-server до публикации).

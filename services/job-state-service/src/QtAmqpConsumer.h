@@ -44,14 +44,28 @@ public:
     // вперёд вместо честного round-robin между воркерами.
     void consume(const QString &queue, int prefetchCount, MessageHandler handler);
 
+    // Вариант для подписки не на именованную рабочую очередь, а на копию
+    // событий из fanout-обменника: объявляет обменник, объявляет свою
+    // durable-очередь с заданным именем и биндит её к обменнику, затем
+    // consume как обычно. Нужен job-state-service'у, чтобы получать копию
+    // каждого сообщения о создании задачи, не забирая её из jobs.process/
+    // jobs.validate, которые продолжает потреблять nx-worker-stub.
+    void consumeFromFanoutExchange(const QString &exchange, const QString &queueName,
+                                    int prefetchCount, MessageHandler handler);
+
     void ack(uint64_t deliveryTag);
     void reject(uint64_t deliveryTag, bool requeue);
 
-    // Объявляет fanout-обменник для событий о завершении задачи
-    // ("jobs.completed") — тем же каналом, которым consume'ится работа.
-    // AMQP не запрещает publish и consume на одном канале одновременно.
-    void declareCompletionExchange(const QString &exchange);
+    // Публикация — нужна для retry-цикла: при повторной попытке
+    // job-state-service сам кладёт задачу обратно в jobs.process/jobs.validate,
+    // тем же каналом, которым consume'ится работа (AMQP это разрешает).
     bool publish(const QString &exchange, const QString &routingKey, const QByteArray &body);
+
+    // Объявляет jobs.process/jobs.validate с ТЕМИ ЖЕ аргументами, что и в
+    // api-server/nx-worker-stub (durable, без дополнительных Table-аргументов).
+    // Обязательно должно совпадать побитово — иначе RabbitMQ рвёт канал
+    // PRECONDITION_FAILED (см. docs/ADDING_A_SERVICE.md).
+    void declareWorkQueues();
 
 signals:
     void ready();
@@ -78,6 +92,7 @@ private:
     };
 
     void onFdActivated(int fd, int flag);
+    void doConsume(const std::string &queue, int prefetchCount, MessageHandler handler);
     void sendHeartbeat();
     void scheduleReconnect();
     void doConnect();
@@ -90,10 +105,9 @@ private:
     uint16_t m_negotiatedHeartbeat = 0;
 
     // См. подробный комментарий в services/api-server/src/QtAmqpConnection.h —
-    // без автопереподключения разорванное соединение (не важно, по какой
-    // причине — heartbeat, сетевой сбой, пауза контейнера) оставалось бы
-    // мёртвым навсегда, и воркер/job-state-service переставали бы забирать
-    // работу из очереди до ручного рестарта.
+    // без автопереподключения разорванное соединение оставалось бы мёртвым
+    // навсегда, и job-state-service переставал бы видеть новые задачи и
+    // события завершения до ручного рестарта.
     QUrl m_url;
     QTimer m_reconnectTimer;
     int m_reconnectDelayMs = 2000;

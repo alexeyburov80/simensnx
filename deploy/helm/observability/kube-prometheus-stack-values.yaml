@@ -54,9 +54,9 @@ additionalServiceMonitors:
       - port: "8080"
         path: /metrics
         interval: 10s
-  - name: job-orchestrator
+  - name: job-state-service
     selector:
-      matchLabels: { app: job-orchestrator }
+      matchLabels: { app: job-state-service }
     endpoints:
       - port: "8082"
         path: /metrics

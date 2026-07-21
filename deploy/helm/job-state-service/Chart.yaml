@@ -1,0 +1,9 @@
+apiVersion: v2
+name: job-state-service
+description: |
+  SimensNX job-state-service — владелец состояния задач в PostgreSQL, retry-цикл
+  (queued -> processing -> done|failed -> retry|dead_letter). СТРОГО 1 реплика,
+  см. values.yaml и docs/SCALING.md.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

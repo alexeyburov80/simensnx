@@ -56,6 +56,17 @@ public:
     void ack(uint64_t deliveryTag);
     void reject(uint64_t deliveryTag, bool requeue);
 
+    // Публикация — нужна для retry-цикла: при повторной попытке
+    // job-orchestrator сам кладёт задачу обратно в jobs.process/jobs.validate,
+    // тем же каналом, которым consume'ится работа (AMQP это разрешает).
+    bool publish(const QString &exchange, const QString &routingKey, const QByteArray &body);
+
+    // Объявляет jobs.process/jobs.validate с ТЕМИ ЖЕ аргументами, что и в
+    // api-server/nx-worker-stub (durable, без дополнительных Table-аргументов).
+    // Обязательно должно совпадать побитово — иначе RabbitMQ рвёт канал
+    // PRECONDITION_FAILED (см. docs/ADDING_A_SERVICE.md).
+    void declareWorkQueues();
+
 signals:
     void ready();
     void connectionError(QString message);

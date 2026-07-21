@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "HttpServer.h"
+#include "Metrics.h"
 
 namespace {
 
@@ -94,7 +95,17 @@ int main(int argc, char *argv[]) {
     const qint64 maxBodyBytes = qEnvironmentVariable("MAX_UPLOAD_BYTES", "104857600").toLongLong(&maxSizeOk); // 100 МБ
 
     HttpServer server;
+    Metrics metrics;
     server.setMaxBodyBytes(maxSizeOk && maxBodyBytes > 0 ? maxBodyBytes : 100LL * 1024 * 1024);
+
+    server.addRoute("GET", "/metrics", [&metrics](const HttpRequest &) {
+        HttpResponse resp;
+        resp.statusCode = 200;
+        resp.statusText = "OK";
+        resp.contentType = "text/plain; version=0.0.4";
+        resp.body = metrics.render();
+        return resp;
+    });
 
     server.addRoute("GET", "/health", [storageDir](const HttpRequest &) {
         QStorageInfo info(storageDir);
@@ -110,7 +121,7 @@ int main(int argc, char *argv[]) {
 
     static const QRegularExpression filePattern(R"(^/files/(.+)$)");
 
-    server.addRoutePattern("PUT", filePattern, [storageDir](const HttpRequest &req) -> HttpResponse {
+    server.addRoutePattern("PUT", filePattern, [storageDir, &metrics](const HttpRequest &req) -> HttpResponse {
         const QString key = sanitizeKey(req.pathParams.value(0));
         if (key.isEmpty()) {
             return HttpResponse::json(400, "Bad Request", errorJson("invalid or unsafe file key"));
@@ -140,11 +151,13 @@ int main(int argc, char *argv[]) {
         }
 
         qInfo() << "[file-storage-service] stored" << key << "(" << req.body.size() << "bytes )";
+        metrics.inc("filestorage_uploads_total", "Total files successfully stored", {}, 1);
+        metrics.inc("filestorage_bytes_written_total", "Total bytes written across all uploads", {}, static_cast<double>(req.body.size()));
         QJsonObject obj{{"key", key}, {"bytes", req.body.size()}};
         return HttpResponse::json(201, "Created", QJsonDocument(obj).toJson(QJsonDocument::Compact));
     });
 
-    server.addRoutePattern("GET", filePattern, [storageDir](const HttpRequest &req) -> HttpResponse {
+    server.addRoutePattern("GET", filePattern, [storageDir, &metrics](const HttpRequest &req) -> HttpResponse {
         const QString key = sanitizeKey(req.pathParams.value(0));
         if (key.isEmpty()) {
             return HttpResponse::json(400, "Bad Request", errorJson("invalid or unsafe file key"));
@@ -153,9 +166,11 @@ int main(int argc, char *argv[]) {
         const QString fullPath = QDir(storageDir).filePath(key);
         QFile file(fullPath);
         if (!QFileInfo(fullPath).isFile() || !file.open(QIODevice::ReadOnly)) {
+            metrics.inc("filestorage_downloads_total", "Total file download attempts", {{"result", "not_found"}});
             return HttpResponse::json(404, "Not Found", errorJson("file not found"));
         }
 
+        metrics.inc("filestorage_downloads_total", "Total file download attempts", {{"result", "ok"}});
         HttpResponse resp;
         resp.statusCode = 200;
         resp.statusText = "OK";

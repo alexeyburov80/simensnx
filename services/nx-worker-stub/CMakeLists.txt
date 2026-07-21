@@ -26,6 +26,7 @@ FetchContent_MakeAvailable(amqpcpp)
 add_executable(nx-worker-stub
     src/main.cpp
     src/QtAmqpConsumer.cpp
+    src/HttpServer.cpp
 )
 
 target_link_libraries(nx-worker-stub PRIVATE Qt5::Core Qt5::Network amqpcpp)

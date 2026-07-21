@@ -1,0 +1,228 @@
+openapi: 3.0.3
+info:
+  title: SimensNX api-server
+  description: |
+    Публичная точка входа платформы: приём задач на обработку/валидацию NX-моделей,
+    их постановка в очередь и чтение статуса. Аутентификация — через auth-stub
+    (Phase 0: всегда пропускает, но настоящий сетевой вызов — см. `docs/adr/`).
+    Владелец данных о задачах — PostgreSQL, таблица `jobs`; api-server только
+    читает её для `GET /jobs/{id}`, пишет туда исключительно `job-orchestrator`.
+  version: "0.1.0"
+  license:
+    name: Internal
+servers:
+  - url: http://localhost:8080
+    description: Локальный docker-compose
+
+tags:
+  - name: jobs
+    description: Постановка задач на обработку/валидацию NX-моделей
+  - name: system
+    description: Служебные эндпоинты (health, метрики)
+
+paths:
+  /:
+    get:
+      tags: [system]
+      summary: Проверка, что сервис вообще жив
+      responses:
+        "200":
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: api-server }
+
+  /health:
+    get:
+      tags: [system]
+      summary: Готовность сервиса и его зависимостей
+      description: |
+        В отличие от `/`, реально проверяет PostgreSQL (`SELECT 1`) и готовность
+        AMQP-канала к RabbitMQ — то, что должно смотреть readinessProbe в k8s.
+      responses:
+        "200":
+          description: Сервис и все его зависимости готовы принимать трафик
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+        "503":
+          description: PostgreSQL или RabbitMQ недоступны
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+
+  /metrics:
+    get:
+      tags: [system]
+      summary: Метрики в формате Prometheus text exposition
+      responses:
+        "200":
+          description: Текстовый дамп метрик
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /jobs:
+    post:
+      tags: [jobs]
+      summary: Поставить задачу на обработку или валидацию
+      description: |
+        Порядок действий: (1) реальный сетевой вызов к auth-stub — если он
+        недоступен или отказал, запрос не публикуется, ответ 503;
+        (2) если передан `idempotency_key` и задача с таким ключом уже
+        существует — публикация НЕ происходит повторно, возвращается тот же
+        `job_id`, что и в первый раз (`idempotent_replay: true`);
+        (3) иначе генерируется новый `job_id` (UUID), сообщение публикуется
+        в `jobs.process`/`jobs.validate` (RabbitMQ) и копией — в fanout
+        `jobs.events`, откуда его заберёт `job-orchestrator` и создаст
+        строку в PostgreSQL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateJobRequest" }
+            examples:
+              process:
+                summary: Задача на обработку
+                value:
+                  client_id: acme-corp
+                  job_type: process
+                  input_file_ref: models/part1.step
+                  idempotency_key: order-42
+              validate:
+                summary: Задача на валидацию (без idempotency_key)
+                value:
+                  client_id: acme-corp
+                  job_type: validate
+                  input_file_ref: models/part2.step
+      responses:
+        "202":
+          description: Задача принята и поставлена в очередь
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobAccepted" }
+        "200":
+          description: Повтор запроса с уже использованным idempotency_key — возвращён существующий job_id, новая задача не создавалась
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdempotentReplay" }
+        "400":
+          description: Невалидное тело запроса (не JSON, нет обязательных полей, некорректный job_type)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: auth-stub недоступен/отказал, либо канал к RabbitMQ ещё не готов — задача НЕ поставлена в очередь
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /jobs/{id}:
+    get:
+      tags: [jobs]
+      summary: Текущий статус задачи
+      description: Читает состояние напрямую из PostgreSQL (таблица `jobs`, владелец записи — `job-orchestrator`).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: 503ceb5c-d23f-49df-95a4-97bdcc0cec03
+      responses:
+        "200":
+          description: Текущее состояние задачи
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "404":
+          description: Задача с таким id не найдена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Ошибка запроса к PostgreSQL
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  schemas:
+    CreateJobRequest:
+      type: object
+      required: [client_id, job_type, input_file_ref]
+      properties:
+        client_id:
+          type: string
+          description: Идентификатор клиента-владельца задачи
+          example: acme-corp
+        job_type:
+          type: string
+          enum: [process, validate]
+          description: |
+            `process` — полная обработка (проверка лицензии, "запуск" NX,
+            результат). `validate` — Phase 0 всегда автоматически одобряется
+            (`nx-worker-stub` не делает никаких проверок для этого типа).
+        input_file_ref:
+          type: string
+          description: Ключ файла-модели в file-storage-service
+          example: models/part1.step
+        idempotency_key:
+          type: string
+          nullable: true
+          description: |
+            Опциональный ключ идемпотентности. Повторный запрос с тем же
+            ключом не создаёт вторую задачу — см. описание POST /jobs.
+          example: order-42
+
+    JobAccepted:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string, example: queued }
+        queue: { type: string, example: jobs.process }
+
+    IdempotentReplay:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        status:
+          type: string
+          description: Текущий статус УЖЕ существующей задачи (не обязательно queued)
+        idempotent_replay: { type: boolean, example: true }
+
+    Job:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        client_id: { type: string }
+        job_type: { type: string, enum: [process, validate] }
+        status:
+          type: string
+          enum: [queued, processing, done, failed, dead_letter]
+          description: |
+            queued → processing → done, либо queued → processing → failed →
+            (retry: снова queued) → ... → dead_letter после исчерпания
+            max_attempts. Полный цикл реализован в job-orchestrator.
+        input_file_ref: { type: string }
+        result_file_ref: { type: string, nullable: true }
+        error_message: { type: string, nullable: true }
+        attempt_count: { type: integer, example: 1 }
+        max_attempts: { type: integer, example: 3 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    HealthStatus:
+      type: object
+      properties:
+        status: { type: string, enum: [healthy, degraded] }
+        postgres: { type: string, enum: [ready, not_ready] }
+        rabbitmq: { type: string, enum: [ready, not_ready] }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }

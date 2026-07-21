@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "HttpServer.h"
+#include "Metrics.h"
 #include "QtAmqpConnection.h"
 
 namespace {
@@ -189,9 +190,19 @@ int main(int argc, char *argv[]) {
     amqp.connectToServer(rabbitmqUrl);
 
     HttpServer server;
+    Metrics metrics;
 
     server.addRoute("GET", "/", [](const HttpRequest &) {
         return HttpResponse::json(200, "OK", R"({"status":"ok","service":"api-server"})");
+    });
+
+    server.addRoute("GET", "/metrics", [&metrics](const HttpRequest &) {
+        HttpResponse resp;
+        resp.statusCode = 200;
+        resp.statusText = "OK";
+        resp.contentType = "text/plain; version=0.0.4";
+        resp.body = metrics.render();
+        return resp;
     });
 
     // Health-check раньше всегда отвечал "healthy", даже если соединение с
@@ -211,7 +222,7 @@ int main(int argc, char *argv[]) {
         return HttpResponse::json(200, "OK", R"({"status":"healthy","postgres":"ready","rabbitmq":"ready"})");
     });
 
-    server.addRoute("POST", "/jobs", [&amqp, &nam, authServiceUrl](const HttpRequest &req, HttpServer::RespondFn respond) {
+    server.addRoute("POST", "/jobs", [&amqp, &nam, authServiceUrl, &metrics](const HttpRequest &req, HttpServer::RespondFn respond) {
         QJsonParseError parseError{};
         const QJsonDocument doc = QJsonDocument::fromJson(req.body, &parseError);
         if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
@@ -245,12 +256,13 @@ int main(int argc, char *argv[]) {
 
         const QByteArray authHeader = req.headers.value("authorization");
 
-        callAuthStub(nam, authServiceUrl, authHeader, [&amqp, respond, clientId, jobType, inputFileRef, idempotencyKey](bool allowed, QString authError) {
+        callAuthStub(nam, authServiceUrl, authHeader, [&amqp, &metrics, respond, clientId, jobType, inputFileRef, idempotencyKey](bool allowed, QString authError) {
             if (!allowed) {
                 // auth-stub недоступен или отказал — fail closed, а не
                 // тихо публикуем без проверки (это свело бы на нет весь
                 // смысл её вызова).
                 qWarning() << "[api-server] auth check failed:" << authError;
+                metrics.inc("api_auth_check_failures_total", "Total requests rejected because auth-stub was unavailable or denied");
                 respond(HttpResponse::json(503, "Service Unavailable",
                                             errorJson("auth service unavailable: " + authError)));
                 return;
@@ -265,6 +277,7 @@ int main(int argc, char *argv[]) {
             if (!idempotencyKey.isEmpty()) {
                 const ExistingJob existing = findJobByIdempotencyKey(idempotencyKey);
                 if (existing.found) {
+                    metrics.inc("api_idempotent_replays_total", "Total POST /jobs requests that matched an existing idempotency_key");
                     QJsonObject respObj{
                         {"job_id", existing.jobId},
                         {"status", existing.status},
@@ -295,10 +308,13 @@ int main(int argc, char *argv[]) {
                 // Канал не готов — сообщение НЕ ушло. Раньше publish_job()
                 // в этом случае молча ничего не делал, а клиенту всё равно
                 // возвращался "status": "pending", как будто всё в порядке.
+                metrics.inc("api_jobs_publish_failed_total", "Total POST /jobs requests that failed because the RabbitMQ channel was not ready",
+                            {{"job_type", jobType}});
                 respond(HttpResponse::json(503, "Service Unavailable",
                                             errorJson("RabbitMQ channel is not ready, job was not queued")));
                 return;
             }
+            metrics.inc("api_jobs_published_total", "Total jobs successfully published to a work queue", {{"job_type", jobType}});
 
             // Копия того же сообщения — в fanout jobs.events, чтобы
             // job-orchestrator узнал о задаче и сохранил её в PostgreSQL.

@@ -94,11 +94,24 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # Интерактивная документация api-server из services/api-server/openapi.yaml —
+  # localhost:8090, можно сразу пробовать запросы прямо из браузера.
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.17.14
+    ports:
+      - "8090:8080"
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+    volumes:
+      - ./services/api-server/openapi.yaml:/spec/openapi.yaml:ro
+    restart: unless-stopped
+
   # Локальная линуксовая заглушка для проверки протокола.
   # Реальный воркер — Windows, вне docker-compose/k8s. См. services/nx-worker-stub/README.md
   nx-worker-stub:
     build: ./services/nx-worker-stub
     environment:
+      PORT: "8085"
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-simensnx}:${RABBITMQ_PASSWORD:-simensnx}@rabbitmq:5672/
       FILE_STORAGE_URL: http://file-storage-service:8084
       LICENSE_SERVER_URL: http://license-server-stub:8083
@@ -109,6 +122,19 @@ services:
         condition: service_started
       license-server-stub:
         condition: service_started
+    restart: unless-stopped
+
+  # --- Метрики: каждый сервис отдаёт /metrics в формате Prometheus text
+  # exposition, Prometheus их сам scrape'ит по расписанию — тот же pull-принцип,
+  # что и для логов (см. docs/adr/0003-logging-pull-not-push.md), никакой
+  # сервис никуда сам ничего не отправляет.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    ports:
+      - "9090:9090"
     restart: unless-stopped
 
   # --- Логирование: каждый сервис пишет только в свой stdout (уже так и
@@ -146,6 +172,7 @@ services:
       - grafanadata:/var/lib/grafana
     depends_on:
       - loki
+      - prometheus
     restart: unless-stopped
 
 volumes:
@@ -154,3 +181,4 @@ volumes:
   rabbitmqdata:
   lokidata:
   grafanadata:
+  prometheusdata:

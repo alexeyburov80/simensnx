@@ -11,6 +11,7 @@
 
 #include "HttpServer.h"
 #include "LicensePool.h"
+#include "Metrics.h"
 
 namespace {
 
@@ -66,6 +67,22 @@ int main(int argc, char *argv[]) {
     LicensePool pool(seatsOk && seats > 0 ? seats : 3, ttlOk && ttlSeconds > 0 ? ttlSeconds : 300);
 
     HttpServer server;
+    Metrics metrics;
+
+    server.addRoute("GET", "/metrics", [&pool, &metrics](const HttpRequest &) {
+        pool.refresh();
+        // Gauge, не counter — количество занятых мест естественным образом
+        // то растёт, то падает (в отличие от checkout/checkin ниже, которые
+        // считают СОБЫТИЯ и потому корректно являются counter'ами).
+        metrics.set("license_seats_in_use", "Current number of license seats checked out", {}, pool.seatsInUse());
+        metrics.set("license_seats_total", "Total configured license seats", {}, pool.totalSeats());
+        HttpResponse resp;
+        resp.statusCode = 200;
+        resp.statusText = "OK";
+        resp.contentType = "text/plain; version=0.0.4";
+        resp.body = metrics.render();
+        return resp;
+    });
 
     server.addRoute("GET", "/health", [&pool](const HttpRequest &) {
         pool.refresh();
@@ -88,7 +105,7 @@ int main(int argc, char *argv[]) {
         return HttpResponse::json(200, "OK", QJsonDocument(obj).toJson(QJsonDocument::Compact));
     });
 
-    server.addRoute("POST", "/checkout", [&pool](const HttpRequest &req) -> HttpResponse {
+    server.addRoute("POST", "/checkout", [&pool, &metrics](const HttpRequest &req) -> HttpResponse {
         QJsonParseError parseError{};
         const QJsonDocument doc = QJsonDocument::fromJson(req.body, &parseError);
         if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
@@ -103,6 +120,7 @@ int main(int argc, char *argv[]) {
 
         const LicensePool::CheckoutResult result = pool.checkout(clientId, jobId);
         if (!result.ok) {
+            metrics.inc("license_checkout_total", "Total /checkout requests", {{"result", "denied"}});
             // Настоящий сигнал "нет свободных лицензий" — а не выдумка.
             // Клиент (nx-worker-stub) должен трактовать 503 как "верни
             // задачу в очередь / попробуй позже", а не как ошибку задачи.
@@ -113,6 +131,7 @@ int main(int argc, char *argv[]) {
             };
             return HttpResponse::json(503, "Service Unavailable", QJsonDocument(err).toJson(QJsonDocument::Compact));
         }
+        metrics.inc("license_checkout_total", "Total /checkout requests", {{"result", "granted"}});
 
         QJsonObject resp{
             {"token", result.token},

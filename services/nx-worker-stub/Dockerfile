@@ -28,4 +28,7 @@ COPY --from=build /src/build/nx-worker-stub /usr/local/bin/nx-worker-stub
 RUN useradd --system --no-create-home --shell /usr/sbin/nologin nx
 USER nx
 
+# 8085 — только /health (liveness) и /metrics (Prometheus scrape), никакой
+# бизнес-логики через HTTP сюда не приходит — воркер остаётся consumer'ом.
+EXPOSE 8085
 ENTRYPOINT ["/usr/local/bin/nx-worker-stub"]

@@ -179,3 +179,19 @@ void QtAmqpConsumer::ack(uint64_t deliveryTag) {
 void QtAmqpConsumer::reject(uint64_t deliveryTag, bool requeue) {
     if (m_channel) m_channel->reject(deliveryTag, requeue ? AMQP::requeue : 0);
 }
+
+bool QtAmqpConsumer::publish(const QString &exchange, const QString &routingKey, const QByteArray &body) {
+    if (!m_ready || !m_channel) return false;
+    // persistent=true — см. подробный комментарий в
+    // services/api-server/src/QtAmqpConnection.cpp: durable-очередь без
+    // этого флага переживёт рестарт брокера, а сообщения внутри — нет.
+    AMQP::Envelope envelope(body.constData(), body.size());
+    envelope.setPersistent(true);
+    return m_channel->publish(exchange.toStdString(), routingKey.toStdString(), envelope);
+}
+
+void QtAmqpConsumer::declareWorkQueues() {
+    if (!m_channel) return;
+    m_channel->declareQueue("jobs.process", AMQP::durable);
+    m_channel->declareQueue("jobs.validate", AMQP::durable);
+}

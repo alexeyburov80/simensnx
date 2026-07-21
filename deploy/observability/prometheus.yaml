@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: api-server
+    static_configs:
+      - targets: ["api-server:8080"]
+  - job_name: job-orchestrator
+    static_configs:
+      - targets: ["job-orchestrator:8082"]
+  - job_name: nx-worker-stub
+    static_configs:
+      - targets: ["nx-worker-stub:8085"]
+  - job_name: file-storage-service
+    static_configs:
+      - targets: ["file-storage-service:8084"]
+  - job_name: license-server-stub
+    static_configs:
+      - targets: ["license-server-stub:8083"]
+  - job_name: auth-stub
+    static_configs:
+      - targets: ["auth-stub:8081"]

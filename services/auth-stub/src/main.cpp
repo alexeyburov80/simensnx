@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "HttpServer.h"
+#include "Metrics.h"
 
 namespace {
 
@@ -55,9 +56,19 @@ int main(int argc, char *argv[]) {
     }
 
     HttpServer server;
+    Metrics metrics;
 
     server.addRoute("GET", "/health", [](const HttpRequest &) {
         return HttpResponse::json(200, "OK", R"({"status":"healthy"})");
+    });
+
+    server.addRoute("GET", "/metrics", [&metrics](const HttpRequest &) {
+        HttpResponse resp;
+        resp.statusCode = 200;
+        resp.statusText = "OK";
+        resp.contentType = "text/plain; version=0.0.4";
+        resp.body = metrics.render();
+        return resp;
     });
 
     // Phase 0 по ROADMAP.md: "всегда пропускает запрос, но с реальным
@@ -66,7 +77,8 @@ int main(int argc, char *argv[]) {
     // нет), а чтобы api-server делал НАСТОЯЩИЙ HTTP round-trip перед каждой
     // публикацией задачи, и это было видно в задержках/логах уже сейчас,
     // а не только когда появится Keycloak/OAuth2 в Phase 3.
-    server.addRoute("POST", "/verify", [](const HttpRequest &req) {
+    server.addRoute("POST", "/verify", [&metrics](const HttpRequest &req) {
+        metrics.inc("auth_verify_requests_total", "Total POST /verify requests received");
         QString clientId = "anonymous";
         if (req.headers.contains("authorization")) {
             const QByteArray token = req.headers.value("authorization");

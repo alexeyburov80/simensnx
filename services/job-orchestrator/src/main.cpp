@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "HttpServer.h"
+#include "Metrics.h"
 #include "QtAmqpConsumer.h"
 
 namespace {
@@ -88,6 +89,67 @@ QJsonObject jobRowToJson(const QSqlQuery &q) {
     return obj;
 }
 
+// Повторно ставит задачу в работу или переводит её в терминальный
+// dead_letter — единая точка принятия решения "ретраить или сдаться",
+// используется и для событий status=failed от воркера, и для sweep'а
+// зависших в processing задач (см. main()). Это и есть тот самый
+// retry-цикл из ROADMAP.md Phase 1 ("job-orchestrator: retry, обработка
+// таймаутов") — раньше здесь была только защита от бесконечного цикла на
+// баге с гонкой, а не бизнес-retry.
+void retryOrDeadLetter(QtAmqpConsumer &amqp, Metrics &metrics, const QString &jobId, const QString &errorMessage) {
+    QSqlQuery q;
+    q.prepare("SELECT client_id, job_type, input_file_ref, attempt_count, max_attempts "
+              "FROM jobs WHERE id = :id");
+    q.bindValue(":id", jobId);
+    if (!q.exec() || !q.next()) {
+        qWarning() << "[job-orchestrator] retryOrDeadLetter: job" << jobId << "not found, cannot retry";
+        return;
+    }
+
+    const QString clientId = q.value("client_id").toString();
+    const QString jobType = q.value("job_type").toString();
+    const QString inputFileRef = q.value("input_file_ref").toString();
+    const int attemptCount = q.value("attempt_count").toInt();
+    const int maxAttempts = q.value("max_attempts").toInt();
+
+    if (attemptCount < maxAttempts) {
+        // attempt_count уже учтён в момент, когда воркер прислал
+        // "processing" (см. services/nx-worker-stub) — здесь его заново не
+        // увеличиваем, следующая попытка сама себя посчитает, когда
+        // какой-нибудь воркер снова возьмёт задачу в работу.
+        const QString queue = (jobType == "validate") ? "jobs.validate" : "jobs.process";
+        const QJsonObject payload{
+            {"job_id", jobId}, {"client_id", clientId}, {"job_type", jobType}, {"input_file_ref", inputFileRef},
+        };
+        const bool published = amqp.publish("", queue, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        if (!published) {
+            qWarning() << "[job-orchestrator] failed to republish job" << jobId << "for retry - AMQP channel not ready,"
+                       << "leaving status as-is, will be retried by the next sweep";
+            return;
+        }
+
+        QSqlQuery upd;
+        upd.prepare("UPDATE jobs SET status = 'queued', error_message = :err WHERE id = :id");
+        upd.bindValue(":err", errorMessage);
+        upd.bindValue(":id", jobId);
+        upd.exec();
+        qInfo() << "[job-orchestrator] job" << jobId << "requeued for retry (" << (attemptCount + 1) << "/" << maxAttempts
+                << "attempts used), queue=" << queue;
+        metrics.inc("orchestrator_jobs_retried_total", "Total jobs requeued for another attempt after failure",
+                    {{"job_type", jobType}});
+    } else {
+        QSqlQuery upd;
+        upd.prepare("UPDATE jobs SET status = 'dead_letter', error_message = :err WHERE id = :id");
+        upd.bindValue(":err", errorMessage);
+        upd.bindValue(":id", jobId);
+        upd.exec();
+        qWarning() << "[job-orchestrator] job" << jobId << "exhausted" << maxAttempts
+                   << "attempts - moved to dead_letter:" << errorMessage;
+        metrics.inc("orchestrator_jobs_dead_lettered_total", "Total jobs moved to dead_letter after exhausting max_attempts",
+                    {{"job_type", jobType}});
+    }
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -118,29 +180,38 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    bool stuckOk = false;
+    const int stuckTimeoutSeconds = qEnvironmentVariable("JOB_STUCK_TIMEOUT_SECONDS", "120").toInt(&stuckOk);
+
     QtAmqpConsumer amqp;
+    Metrics metrics;
     QObject::connect(&amqp, &QtAmqpConsumer::connectionError, [](const QString &msg) {
         qWarning() << "[job-orchestrator] RabbitMQ error:" << msg;
     });
 
-    // Счётчик попыток применить jobs.completed к job_id, которого ещё (или
-    // уже никогда) нет в БД. Без этой защиты сообщение, для которого intake
-    // в принципе никогда не придёт (например, потому что api-server не
-    // публикует jobs.events — см. диагностику ниже), requeue'ится мгновенно
-    // и бесконечно, забивая CPU и логи. Живёт в памяти процесса и
-    // сбрасывается при рестарте — это осознанный компромисс Phase 0, а не
-    // полноценный retry с персистентным backoff.
+    // Счётчик попыток применить статусное событие к job_id, которого ещё
+    // (или уже никогда) нет в БД. Без этой защиты сообщение, для которого
+    // intake в принципе никогда не придёт (например, потому что api-server
+    // работает на образе без публикации в jobs.events), requeue'ится
+    // мгновенно и бесконечно, забивая CPU и логи. Живёт в памяти процесса и
+    // сбрасывается при рестарте — это осознанный компромисс, отдельный от
+    // retryOrDeadLetter() выше (тот — про бизнес-retry обработки задачи,
+    // этот — про защиту от собственного бага рассинхронизации событий).
     auto unknownJobRetries = std::make_shared<QHash<QString, int>>();
     constexpr int kMaxUnknownJobRetries = 8;
 
-    // Consume копии события о создании задачи из fanout-обменника jobs.events
-    // (объявляет и публикует его api-server, см. services/api-server).
-    // jobs.process/jobs.validate, которые реально забирает nx-worker-stub,
-    // здесь не трогаем — у orchestrator своя отдельная очередь-копия.
-    QObject::connect(&amqp, &QtAmqpConsumer::ready, [&amqp, unknownJobRetries]() {
-        qInfo() << "[job-orchestrator] RabbitMQ channel ready, starting intake consumer";
+    QObject::connect(&amqp, &QtAmqpConsumer::ready, [&amqp, &metrics, unknownJobRetries]() {
+        qInfo() << "[job-orchestrator] RabbitMQ channel ready, starting consumers";
+
+        // jobs.process/jobs.validate объявляются здесь ТЕМИ ЖЕ аргументами,
+        // что и в api-server/nx-worker-stub (durable, без Table-аргументов) —
+        // нужны для republish при retry, см. retryOrDeadLetter().
+        amqp.declareWorkQueues();
+
+        // Consume копии события о создании задачи из fanout-обменника jobs.events
+        // (объявляет и публикует его api-server, см. services/api-server).
         amqp.consumeFromFanoutExchange("jobs.events", "jobs.orchestrator.intake", 10,
-            [&amqp](const AMQP::Message &message, uint64_t deliveryTag, bool redelivered) {
+            [&amqp, &metrics](const AMQP::Message &message, uint64_t deliveryTag, bool redelivered) {
                 const QByteArray body(message.body(), static_cast<int>(message.bodySize()));
 
                 QJsonParseError parseError{};
@@ -169,16 +240,11 @@ int main(int argc, char *argv[]) {
                 QSqlQuery q;
                 bool prepared;
                 if (idempotencyKey.isEmpty()) {
-                    // Без idempotency_key единственная защита от дублей —
-                    // сам id (UUID, сгенерированный один раз в api-server);
-                    // конфликт здесь означает redelivery того же сообщения.
                     prepared = q.prepare(
                         "INSERT INTO jobs (id, client_id, job_type, status, input_file_ref) "
                         "VALUES (:id, :client_id, :job_type, 'queued', :input_file_ref) "
                         "ON CONFLICT (id) DO NOTHING");
                 } else {
-                    // С idempotency_key именно он — источник истины о
-                    // дубле повторной отправки клиента, а не id.
                     prepared = q.prepare(
                         "INSERT INTO jobs (id, client_id, job_type, status, input_file_ref, idempotency_key) "
                         "VALUES (:id, :client_id, :job_type, 'queued', :input_file_ref, :idempotency_key) "
@@ -191,33 +257,29 @@ int main(int argc, char *argv[]) {
                 q.bindValue(":input_file_ref", inputFileRef);
 
                 if (!prepared || !q.exec()) {
-                    // Реальная ошибка БД (не дубль, а, например, обрыв
-                    // соединения) — НЕ ack и НЕ reject: сообщение остаётся
-                    // unacked и будет доставлено повторно, когда канал
-                    // переоткроется (или после restart процесса).
                     qWarning() << "[job-orchestrator] failed to persist job" << jobId << ":" << q.lastError().text();
                     return;
                 }
 
                 qInfo() << "[job-orchestrator] persisted job" << jobId << "(redelivered=" << redelivered << ")"
                         << "pid=" << QCoreApplication::applicationPid();
+                metrics.inc("orchestrator_jobs_persisted_total", "Total jobs persisted to PostgreSQL from jobs.events",
+                            {{"job_type", jobType}});
                 amqp.ack(deliveryTag);
             });
 
-        // События завершения от nx-worker-stub — единственное место в
-        // системе, где jobs.status меняется с 'queued' на что-то другое.
-        // Валидные статусы ограничены enum'ом job_status в БД (см.
-        // db/migrations/0001_init.sql) — если воркер вдруг пришлёт что-то
-        // иное, INSERT/UPDATE упадёт на уровне Postgres, а не тихо запишет
-        // мусор.
-        amqp.consumeFromFanoutExchange("jobs.completed", "jobs.orchestrator.completions", 10,
-            [&amqp, unknownJobRetries](const AMQP::Message &message, uint64_t deliveryTag, bool redelivered) {
+        // Статусные события от nx-worker-stub: processing -> done | failed.
+        // failed теперь не терминальное состояние само по себе —
+        // retryOrDeadLetter() решает, вернуть задачу в очередь или отправить
+        // в dead_letter, в зависимости от attempt_count/max_attempts.
+        amqp.consumeFromFanoutExchange("jobs.status", "jobs.orchestrator.status", 10,
+            [&amqp, &metrics, unknownJobRetries](const AMQP::Message &message, uint64_t deliveryTag, bool redelivered) {
                 const QByteArray body(message.body(), static_cast<int>(message.bodySize()));
 
                 QJsonParseError parseError{};
                 const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
                 if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-                    qWarning() << "[job-orchestrator] malformed jobs.completed message, rejecting:"
+                    qWarning() << "[job-orchestrator] malformed jobs.status message, rejecting:"
                                << parseError.errorString();
                     amqp.reject(deliveryTag, false);
                     return;
@@ -230,74 +292,70 @@ int main(int argc, char *argv[]) {
                 const QString errorMessage = obj.value("error_message").toString();
 
                 if (jobId.isEmpty() || status.isEmpty()) {
-                    qWarning() << "[job-orchestrator] jobs.completed message missing job_id/status, rejecting:"
+                    qWarning() << "[job-orchestrator] jobs.status message missing job_id/status, rejecting:"
                                << QString::fromUtf8(body);
                     amqp.reject(deliveryTag, false);
                     return;
                 }
 
+                metrics.inc("orchestrator_status_events_total", "Total jobs.status events received", {{"status", status}});
+
+                if (status == "failed") {
+                    // retryOrDeadLetter сама делает SELECT+UPDATE (и, если
+                    // нужно, republish) — здесь просто отдаём ей управление
+                    // и подтверждаем приём события. numRowsAffected здесь не
+                    // проверяем: если строки нет, retryOrDeadLetter молча
+                    // логирует и ничего не делает (см. её реализацию) — race
+                    // с intake для failed-события маловероятна на практике
+                    // (между "processing" и "failed" всегда проходит время
+                    // на реальную работу), поэтому отдельный backoff-цикл
+                    // здесь не заводили, в отличие от processing/done ниже.
+                    retryOrDeadLetter(amqp, metrics, jobId, errorMessage);
+                    amqp.ack(deliveryTag);
+                    return;
+                }
+
                 QSqlQuery q;
-                q.prepare(
-                    "UPDATE jobs SET status = :status, "
-                    "result_file_ref = COALESCE(NULLIF(:result_file_ref, ''), result_file_ref), "
-                    "error_message = COALESCE(NULLIF(:error_message, ''), error_message), "
-                    "attempt_count = attempt_count + 1 "
-                    "WHERE id = :id");
-                q.bindValue(":status", status);
-                q.bindValue(":result_file_ref", resultFileRef);
-                q.bindValue(":error_message", errorMessage);
-                q.bindValue(":id", jobId);
+                if (status == "processing") {
+                    q.prepare("UPDATE jobs SET status = 'processing', attempt_count = attempt_count + 1 "
+                              "WHERE id = :id");
+                    q.bindValue(":id", jobId);
+                } else {
+                    q.prepare(
+                        "UPDATE jobs SET status = :status, "
+                        "result_file_ref = COALESCE(NULLIF(:result_file_ref, ''), result_file_ref), "
+                        "error_message = COALESCE(NULLIF(:error_message, ''), error_message) "
+                        "WHERE id = :id");
+                    q.bindValue(":status", status);
+                    q.bindValue(":result_file_ref", resultFileRef);
+                    q.bindValue(":error_message", errorMessage);
+                    q.bindValue(":id", jobId);
+                }
 
                 if (!q.exec()) {
                     // enum job_status отвергнет неизвестный статус здесь же —
-                    // и это abezopasno: сообщение останется unacked и не
+                    // и это безопасно: сообщение останется unacked и не
                     // потеряется, но и мусор в БД не попадёт.
-                    qWarning() << "[job-orchestrator] failed to apply completion for job" << jobId << ":"
+                    qWarning() << "[job-orchestrator] failed to apply status" << status << "for job" << jobId << ":"
                                << q.lastError().text();
                     return;
                 }
                 if (q.numRowsAffected() == 0) {
-                    // Диагностика: явным SELECT проверяем, есть ли строка вообще
-                    // и с каким статусом её видит ЭТОТ инстанс job-orchestrator.
-                    // Если тут "exists=false" и одновременно где-то в логах есть
-                    // "persisted job" с ДРУГИМ pid — это два конкурирующих
-                    // процесса на одних очередях (например, не остановленный
-                    // старый контейнер), а не гонка внутри одного процесса.
-                    QSqlQuery check;
-                    check.prepare("SELECT status FROM jobs WHERE id = :id");
-                    check.bindValue(":id", jobId);
-                    const bool rowExists = check.exec() && check.next();
-                    qWarning() << "[job-orchestrator] diagnostic: row for" << jobId
-                               << "exists=" << rowExists
-                               << (rowExists ? ("current_status=" + check.value("status").toString()) : QString())
-                               << "seen by pid=" << QCoreApplication::applicationPid();
-
-                    // Может быть настоящей гонкой (jobs.completed пришёл
-                    // раньше своего jobs.events для того же job_id — два
-                    // независимых consumer'а на одном канале, порядок между
-                    // ними не гарантирован), а может быть постоянным
-                    // состоянием: intake для этого job_id не придёт никогда
-                    // (типичная причина — api-server работает на образе без
-                    // публикации в jobs.events). С одной попытки это не
-                    // различить, поэтому: несколько попыток с нарастающей
-                    // паузой, а затем — громкий отказ вместо бесконечного
-                    // busy-loop (именно это было при мгновенном requeue=true
-                    // без лимита — сообщение возвращается в очередь и тут же
-                    // редоставляется тому же consumer'у, ничего не ожидая).
+                    // См. подробный комментарий про это в истории отладки —
+                    // либо настоящая гонка intake/status для одного job_id
+                    // (штатно разрешается за 1-2 попытки), либо постоянная
+                    // рассинхронизация (например, старая версия api-server) —
+                    // тогда лимит попыток не даст уйти в busy-loop.
                     const int attempts = ++(*unknownJobRetries)[jobId];
                     if (attempts > kMaxUnknownJobRetries) {
                         qCritical() << "[job-orchestrator] job" << jobId << "still unknown after" << attempts
-                                    << "attempts - giving up on this completion event. Most likely cause:"
-                                    << "api-server is not publishing to the jobs.events exchange (check it was"
-                                    << "rebuilt/redeployed with the patch that adds this), or the job_id in the"
-                                    << "message doesn't match any row job-orchestrator ever inserted.";
+                                    << "attempts - giving up on this status event (status=" << status << ").";
                         unknownJobRetries->remove(jobId);
-                        amqp.reject(deliveryTag, false); // без requeue — иначе снова бесконечный цикл
+                        amqp.reject(deliveryTag, false);
                         return;
                     }
-
-                    const int delayMs = std::min(500 * (1 << attempts), 15000); // ~1с, 2с, 4с ... до 15с
-                    qWarning() << "[job-orchestrator] completion for unknown job" << jobId
+                    const int delayMs = std::min(500 * (1 << attempts), 15000);
+                    qWarning() << "[job-orchestrator] status" << status << "for unknown job" << jobId
                                << "- attempt" << attempts << "of" << kMaxUnknownJobRetries
                                << ", retrying in" << delayMs << "ms";
                     QTimer::singleShot(delayMs, [&amqp, deliveryTag]() { amqp.reject(deliveryTag, true); });
@@ -312,7 +370,43 @@ int main(int argc, char *argv[]) {
     });
     amqp.connectToServer(rabbitmqUrl);
 
+    // Sweep зависших в processing задач — воркер мог упасть посреди работы,
+    // так и не прислав ни done, ни failed. Без этого такая задача осталась
+    // бы в processing навсегда, а клиент никогда не узнал бы, что она не
+    // выполнится. attempt_count уже увеличен в момент входа в processing,
+    // поэтому здесь просто применяем то же решение retry/dead_letter, что и
+    // для явного failed от воркера.
+    QTimer stuckSweepTimer;
+    QObject::connect(&stuckSweepTimer, &QTimer::timeout, [&amqp, &metrics, stuckTimeoutSeconds]() {
+        QSqlQuery q;
+        q.prepare("SELECT id FROM jobs WHERE status = 'processing' "
+                  "AND updated_at < now() - (:timeout_seconds || ' seconds')::interval");
+        q.bindValue(":timeout_seconds", stuckTimeoutSeconds);
+        if (!q.exec()) {
+            qWarning() << "[job-orchestrator] stuck-job sweep query failed:" << q.lastError().text();
+            return;
+        }
+        QStringList stuckIds;
+        while (q.next()) stuckIds << q.value("id").toString();
+        for (const QString &jobId : stuckIds) {
+            qWarning() << "[job-orchestrator] job" << jobId << "stuck in processing for over"
+                       << stuckTimeoutSeconds << "s - treating as failed attempt";
+            metrics.inc("orchestrator_stuck_jobs_total", "Total jobs found stuck in processing by the periodic sweep");
+            retryOrDeadLetter(amqp, metrics, jobId, "worker did not report completion within timeout");
+        }
+    });
+    stuckSweepTimer.start(30000); // проверяем раз в 30с
+
     HttpServer server;
+
+    server.addRoute("GET", "/metrics", [&metrics](const HttpRequest &) {
+        HttpResponse resp;
+        resp.statusCode = 200;
+        resp.statusText = "OK";
+        resp.contentType = "text/plain; version=0.0.4";
+        resp.body = metrics.render();
+        return resp;
+    });
 
     server.addRoute("GET", "/health", [&amqp](const HttpRequest &) {
         QSqlQuery q("SELECT 1"); // конструктор с текстом запроса выполняет его сразу
@@ -346,8 +440,6 @@ int main(int argc, char *argv[]) {
     });
 
     server.addRoute("GET", "/jobs", [](const HttpRequest &) {
-        // Базовый листинг без пагинации по курсору — намеренно просто для
-        // Phase 0 ("пишет и читает состояние, реального retry-цикла нет").
         QSqlQuery q("SELECT id, client_id, job_type, status, input_file_ref, result_file_ref, "
                     "error_message, attempt_count, max_attempts, created_at, updated_at "
                     "FROM jobs ORDER BY created_at DESC LIMIT 50");
@@ -360,7 +452,7 @@ int main(int argc, char *argv[]) {
         qCritical() << "[job-orchestrator] failed to listen on port" << port;
         return 1;
     }
-    qInfo() << "[job-orchestrator] listening on port" << port;
+    qInfo() << "[job-orchestrator] listening on port" << port << "stuck-job timeout=" << stuckTimeoutSeconds << "s";
 
     return app.exec();
 }

@@ -13,12 +13,15 @@
 - [x] docker-compose для локальной разработки
 - [x] Схема PostgreSQL: `jobs`, `job_attempts`
 - [ ] Helm-чарты для всех сервисов (базовые Deployment/Service, без HPA/PDB)
-- [ ] `api-server`: эндпоинты `POST /jobs`, `GET /jobs/{id}` возвращают
-      фиктивные данные, но по правильному контракту (OpenAPI-спека)
+- [x] `api-server`: эндпоинты `POST /jobs`, `GET /jobs/{id}` — реальные данные
+      (не фиктивные, как планировалось изначально), по контракту в
+      `services/api-server/openapi.yaml` (валидна по OpenAPI 3.0.3,
+      проверено `openapi-spec-validator`); интерактивно — `localhost:8090`
+      (Swagger UI, см. `docker-compose.yml`)
 - [ ] `auth-stub`: всегда пропускает запрос, но с реальным сетевым вызовом
       (чтобы protocol/latency были видны сразу)
-- [ ] `job-orchestrator`: пишет и читает состояние в PostgreSQL, реального
-      retry-цикла пока нет
+- [x] `job-orchestrator`: пишет и читает состояние в PostgreSQL; retry-цикл
+      с backoff и dead_letter реализован раньше срока (был в Phase 1, см. ниже)
 - [ ] `rabbitmq`: поднят как single-node (compose) / 3-node через Cluster
       Operator (k8s), очереди созданы, DLX настроен
 - [ ] `nx-worker-stub`: читает очередь, спит N секунд, кладёт файл-заглушку
@@ -38,7 +41,9 @@
 - [x] Observability: логи — Promtail/Loki/Grafana поверх stdout контейнеров
       (сделано раньше срока в Phase 0, см. `docs/adr/0003-logging-pull-not-push.md`;
       `log-collector-stub` из push-модели никогда не понадобился).
-      Метрики очереди и воркеров (Prometheus) — ещё нет.
+      Метрики (Prometheus, `/metrics` во всех сервисах + Grafana datasource) —
+      тоже сделано раньше срока. Дашборды под конкретные счётчики ещё не
+      собраны — метрики есть, готовых панелей в Grafana нет.
 - [ ] Backup/DR: Velero для бэкапа состояния кластера и снапшотов PV
 
 ## Phase 2 — Бизнес-логика: обработка и валидация моделей
@@ -49,10 +54,18 @@
 - [ ] `nx-worker`: реальный запуск NX в headless/batch-режиме (NX Journal/
       `run_journal`), обработка ошибок процесса NX (краши, зависания)
 - [ ] `license-server`: реальная интеграция с Siemens FlexLM, учёт
-      количества seats, graceful-деградация при нехватке лицензий
-      (задача должна возвращаться в очередь, а не падать)
-- [ ] `job-orchestrator`: полноценный retry с backoff, обработка "зависших"
-      задач по heartbeat от воркера, идемпотентность по `idempotency_key`
+      количества seats. Graceful-деградация при нехватке лицензий (задача
+      возвращается в очередь, а не падает) уже реализована и проверена на
+      уровне заглушки — `nx-worker-stub` ретраит `/checkout` с бэкоффом
+      вместо мгновенного провала задачи; при переходе на настоящий FlexLM
+      этот механизм переиспользуется как есть.
+- [x] `job-orchestrator`: retry с backoff (queued → processing → done|failed →
+      retry или dead_letter, attempt_count/max_attempts) и sweep зависших в
+      processing задач по таймауту — сделано. Идемпотентность по
+      `idempotency_key` тоже сделана (проверка в api-server до публикации).
+      Не сделано: работает только в 1 экземпляре (см. `docs/SCALING.md`),
+      heartbeat от воркера нет — "завис" определяется по таймауту, а не по
+      живому пульсу воркера.
 - [ ] Версионирование NX Journal/скриптов: отдельный репозиторий или
       подпапка с тегами версий, воркер указывает, какую версию скрипта
       использовал при обработке (для воспроизводимости)

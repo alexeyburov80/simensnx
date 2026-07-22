@@ -22,7 +22,11 @@
 #include "Metrics.h"
 #include "QtAmqpConnection.h"
 
+#include "config/appConfig.h"
+
 namespace {
+
+AppConfig config = loadConfig();
 
 // --- Штатное завершение по SIGINT/SIGTERM (self-pipe trick) ---
 // В исходном коде "graceful shutdown" стоял ПОСЛЕ блокирующего svr.listen(),
@@ -163,19 +167,19 @@ int main(int argc, char *argv[]) {
     // игнорировали RABBITMQ_URL, который передаёт docker-compose/Helm.
     // Теперь это единственный источник конфигурации, со значением по
     // умолчанию для локальной разработки.
-    const QUrl rabbitmqUrl(qEnvironmentVariable("RABBITMQ_URL", "amqp://simensnx:simensnx@rabbitmq:5672/"));
-    if (!rabbitmqUrl.isValid() || rabbitmqUrl.host().isEmpty()) {
-        qCritical() << "[" << serviceName << "] invalid RABBITMQ_URL:" << rabbitmqUrl;
+
+
+    if (!config.rabbitmqUrl.isValid() || config.rabbitmqUrl.host().isEmpty()) {
+        qCritical() << "[" << serviceName << "] invalid RABBITMQ_URL:" << config.rabbitmqUrl;
         return 1;
     }
 
-    const QUrl databaseUrl(qEnvironmentVariable("DATABASE_URL", "postgres://simensnx:simensnx@postgres:5432/simensnx"));
-    if (!openDatabase(databaseUrl)) {
+    if (!openDatabase(config.databaseUrl)) {
         qCritical() << "[" << serviceName << "] failed to connect to PostgreSQL:"
                      << QSqlDatabase::database().lastError().text();
         return 1;
     }
-    qInfo() << "[" << serviceName << "] connected to PostgreSQL at" << databaseUrl.host();
+    qInfo() << "[" << serviceName << "] connected to PostgreSQL at" << config.databaseUrl.host();
 
     const QUrl authServiceUrl(qEnvironmentVariable("AUTH_SERVICE_URL", "http://auth-stub:8081"));
 
@@ -187,7 +191,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(&amqp, &QtAmqpConnection::connectionError, [&](const QString &msg) {
         qWarning() << "[" << serviceName << "] RabbitMQ error:" << msg;
     });
-    amqp.connectToServer(rabbitmqUrl);
+    amqp.connectToServer(config.rabbitmqUrl);
 
     HttpServer server;
     Metrics metrics;
@@ -256,7 +260,7 @@ int main(int argc, char *argv[]) {
 
         const QByteArray authHeader = req.headers.value("authorization");
 
-        callAuthStub(nam, authServiceUrl, authHeader, [&amqp, &metrics, respond, clientId, jobType, inputFileRef, idempotencyKey](bool allowed, QString authError) {
+        callAuthStub(nam, config.authServiceUrl, authHeader, [&amqp, &metrics, respond, clientId, jobType, inputFileRef, idempotencyKey](bool allowed, QString authError) {
             if (!allowed) {
                 // auth-stub недоступен или отказал — fail closed, а не
                 // тихо публикуем без проверки (это свело бы на нет весь
@@ -302,7 +306,7 @@ int main(int argc, char *argv[]) {
             if (!idempotencyKey.isEmpty()) payload["idempotency_key"] = idempotencyKey;
 
             const QByteArray message = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-            const QString queue = (jobType == "validate") ? "jobs.validate" : "jobs.process";
+            const QString queue = (jobType == "validate") ? config.rabbit.validateQueue : config.rabbit.processQueue;
 
             if (!amqp.publish("", queue, message)) {
                 // Канал не готов — сообщение НЕ ушло. Раньше publish_job()

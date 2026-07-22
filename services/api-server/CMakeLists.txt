@@ -35,6 +35,14 @@ add_executable(api-server
     src/main.cpp
     src/HttpServer.cpp
     src/QtAmqpConnection.cpp
+    src/config/env.h
+    src/config/appConfig.h
+    src/config/appConfig.cpp
+    src/config/rabbit/rabbitConfig.h
+    src/config/http/httpStatus.h
+    src/config/http/routes.h
+    src/storage/jobrepository.h
+    src/storage/jobrepository.cpp
 )
 
 target_link_libraries(api-server PRIVATE Qt5::Core Qt5::Network Qt5::Sql amqpcpp)

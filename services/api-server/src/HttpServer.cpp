@@ -1,8 +1,7 @@
 #include "HttpServer.h"
-
 #include <QRegularExpressionMatch>
 #include <QTimer>
-#include <iostream>
+
 
 HttpServer::HttpServer(QObject *parent) : QObject(parent) {
     connect(&m_server, &QTcpServer::newConnection, this, &HttpServer::onNewConnection);

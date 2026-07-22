@@ -1,40 +1,33 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.16) # нужна PROJECT_IS_TOP_LEVEL ниже
 project(api-server LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
+# Тесты — отдельный проект/цель, не часть main.cpp (ROADMAP, Phase 0:
+# "добавить проект unit тестов QTest отдельно от основного кода"). Включены
+# по умолчанию только при сборке этого CMakeLists.txt напрямую (не как
+# часть родительской сборки, которая может не хотеть тянуть Qt5::Test).
+option(API_SERVER_BUILD_TESTS "Собирать QTest-юниты для api-server" ON)
+# Позволяет сконфигурировать ТОЛЬКО api-server-core + tests, вообще не
+# трогая FetchContent(amqpcpp) (а значит и не требуя OpenSSL dev-заголовков
+# и сети до GitHub). Актуально для быстрого CI-джоба "юнит-тесты" отдельно
+# от джоба "собрать образ": `cmake -DAPI_SERVER_BUILD_APP=OFF -DAPI_SERVER_BUILD_TESTS=ON`.
+option(API_SERVER_BUILD_APP "Собирать сам исполняемый api-server (тянет amqpcpp через FetchContent)" ON)
+
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network Sql)
 
-# AMQP-CPP не пакетирован для Debian bookworm / Ubuntu 24.04 (проверено:
-# отсутствует в apt на обоих дистрибутивах на момент написания, появляется
-# только начиная с Debian trixie/Ubuntu 26.04). Поэтому тянем его через
-# FetchContent с фиксацией на конкретный релизный тег, а не через apt и не
-# кладём исходники в репозиторий:
-#   - vendoring исходников в git раздул бы репозиторий (~компилируемая C++
-#     библиотека) и снял бы с нас обязанность когда-либо обновлять её вручную;
-#   - тег вместо ветки/HEAD даёт воспроизводимую сборку — GIT_TAG ниже пиннит
-#     точную версию, обновление — осознанный PR с изменением одной строки.
-# Если сборка когда-нибудь должна стать полностью офлайновой (air-gapped),
-# это единственное место, которое нужно заменить на локальный submodule.
-include(FetchContent)
-FetchContent_Declare(
-    amqpcpp
-    GIT_REPOSITORY https://github.com/CopernicaMarketingSoftware/AMQP-CPP.git
-    GIT_TAG v4.3.27
-    GIT_SHALLOW TRUE
-)
-set(AMQP-CPP_LINUX_TCP ON CACHE BOOL "" FORCE)
-set(AMQP-CPP_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(AMQP-CPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(AMQP-CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(amqpcpp)
-
-add_executable(api-server
-    src/main.cpp
+# api-server-core — всё, что НЕ зависит от amqpcpp/QtAmqpConnection и не
+# является main(). Вынесено в отдельную статическую библиотеку ровно для
+# того, чтобы tests/ мог слинковаться с реальным production-кодом, не
+# перетягивая AMQP-CPP (FetchContent, сборка из исходников) в тестовую
+# сборку — тестам она не нужна, а собирается заметно дольше самого кода.
+add_library(api-server-core STATIC
     src/HttpServer.cpp
-    src/QtAmqpConnection.cpp
+    src/HttpServer.h
+    src/HttpTypes.h
+    src/Metrics.h
     src/config/env.h
     src/config/appConfig.h
     src/config/appConfig.cpp
@@ -44,5 +37,42 @@ add_executable(api-server
     src/storage/jobrepository.h
     src/storage/jobrepository.cpp
 )
+target_include_directories(api-server-core PUBLIC src)
+target_link_libraries(api-server-core PUBLIC Qt5::Core Qt5::Network Qt5::Sql)
 
-target_link_libraries(api-server PRIVATE Qt5::Core Qt5::Network Qt5::Sql amqpcpp)
+if(API_SERVER_BUILD_APP)
+    # AMQP-CPP не пакетирован для Debian bookworm / Ubuntu 24.04 (проверено:
+    # отсутствует в apt на обоих дистрибутивах на момент написания, появляется
+    # только начиная с Debian trixie/Ubuntu 26.04). Поэтому тянем его через
+    # FetchContent с фиксацией на конкретный релизный тег, а не через apt и не
+    # кладём исходники в репозиторий:
+    #   - vendoring исходников в git раздул бы репозиторий (~компилируемая C++
+    #     библиотека) и снял бы с нас обязанность когда-либо обновлять её вручную;
+    #   - тег вместо ветки/HEAD даёт воспроизводимую сборку — GIT_TAG ниже пиннит
+    #     точную версию, обновление — осознанный PR с изменением одной строки.
+    # Если сборка когда-нибудь должна стать полностью офлайновой (air-gapped),
+    # это единственное место, которое нужно заменить на локальный submodule.
+    include(FetchContent)
+    FetchContent_Declare(
+        amqpcpp
+        GIT_REPOSITORY https://github.com/CopernicaMarketingSoftware/AMQP-CPP.git
+        GIT_TAG v4.3.27
+        GIT_SHALLOW TRUE
+    )
+    set(AMQP-CPP_LINUX_TCP ON CACHE BOOL "" FORCE)
+    set(AMQP-CPP_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(AMQP-CPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(AMQP-CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(amqpcpp)
+
+    add_executable(api-server
+        src/main.cpp
+        src/QtAmqpConnection.cpp
+    )
+    target_link_libraries(api-server PRIVATE api-server-core amqpcpp)
+endif()
+
+if(API_SERVER_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

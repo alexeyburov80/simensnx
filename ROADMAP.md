@@ -37,7 +37,16 @@
 - [ ] `license-server-stub`: `/checkout` и `/checkin` возвращают фиктивный
       токен с TTL
 - [ ] `file-storage-service`: upload/download/list поверх локального PV
-- [ ] Нужно добавить проект unit тестов QTest отдельно от основного кода
+- [x] Нужно добавить проект unit тестов QTest отдельно от основного кода —
+      сделано для `api-server`: `services/api-server/tests/` (CMake-цели
+      `tst_httptypes`, `tst_metrics`, `tst_appconfig`, `tst_jobrepository`,
+      `tst_httpserver`, все — через `ctest`). Логика вынесена в статическую
+      библиотеку `api-server-core`, не зависящую от amqpcpp, поэтому тесты
+      собираются и гоняются отдельно от `api-server` (флаги
+      `API_SERVER_BUILD_APP` / `API_SERVER_BUILD_TESTS` в
+      `services/api-server/CMakeLists.txt`) — без сети до GitHub и без
+      OpenSSL dev-заголовков. Остальные сервисы аналогичным проектом тестов
+      пока не покрыты — отдельная задача.
 
 ## Phase 1 — Инфраструктура становится настоящей
 

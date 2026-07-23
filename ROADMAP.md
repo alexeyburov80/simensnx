@@ -4,10 +4,11 @@
 Каждый пункт — отдельная задача/issue. Статус: `stub` (сделана заглушка) →
 `in-progress` → `done`.
 
-## Phase 0 — Оболочка (текущая стадия)
+## Phase 0 — Оболочка (завершена)
 
 Цель: контейнеры, контракты API/очередей/схемы БД существуют и разворачиваются
-в Kubernetes, но без бизнес-логики.
+в Kubernetes, но без бизнес-логики. Все пункты закрыты — текущая стадия
+теперь Phase 1 (см. ниже).
 
 - [x] Структура монорепозитория
 - [x] docker-compose для локальной разработки
@@ -26,17 +27,28 @@
       `services/api-server/openapi.yaml` (валидна по OpenAPI 3.0.3,
       проверено `openapi-spec-validator`); интерактивно — `localhost:8090`
       (Swagger UI, см. `docker-compose.yml`)
-- [ ] `auth-stub`: всегда пропускает запрос, но с реальным сетевым вызовом
-      (чтобы protocol/latency были видны сразу)
+- [x] `auth-stub`: всегда пропускает запрос, но с реальным сетевым вызовом
+      (чтобы protocol/latency были видны сразу) — `POST /verify`, контракт
+      совпадает с тем, что дёргает `api-server` (`callAuthStub()`)
 - [x] `job-state-service`: пишет и читает состояние в PostgreSQL; retry-цикл
       с backoff и dead_letter реализован раньше срока (был в Phase 1, см. ниже)
-- [ ] `rabbitmq`: поднят как single-node (compose) / 3-node через Cluster
-      Operator (k8s), очереди созданы, DLX настроен
-- [ ] `nx-worker-stub`: читает очередь, спит N секунд, кладёт файл-заглушку
-      через `file-storage-service`, подтверждает (ack)
-- [ ] `license-server-stub`: `/checkout` и `/checkin` возвращают фиктивный
-      токен с TTL
-- [ ] `file-storage-service`: upload/download/list поверх локального PV
+- [x] `rabbitmq`: single-node (compose) — очереди/обменники/DLX-policy в
+      `deploy/rabbitmq/definitions.json` (см. `deploy/rabbitmq/README.md` за
+      объяснением топологии и почему dead-lettering задан policy, а не
+      аргументом очереди в коде). 3-node через Cluster Operator (k8s) —
+      осталось, см. Phase 1 (это отдельный, более крупный пункт: сам
+      кластер, а не топология очередей).
+- [x] `nx-worker-stub`: читает очередь, спит N секунд, кладёт файл-заглушку
+      через `file-storage-service` (реальный `PUT /files/{key}` с
+      минимальным валидным STEP-заголовком, не вымышленная строка-ссылка,
+      как было раньше), подтверждает (ack). При неудаче сохранения —
+      ретраи с backoff (до 5 попыток), затем компенсирующий `checkin`
+      лицензии и `reject` в DLQ вместо зависшего зарезервированного места.
+- [x] `license-server-stub`: `/checkout` и `/checkin` возвращают фиктивный
+      токен с TTL — контракт совпадает с тем, что вызывает `nx-worker-stub`
+- [x] `file-storage-service`: upload/download/list поверх локального PV —
+      `PUT`/`GET`/`DELETE /files/{key}` + `GET /files`, защита от path
+      traversal, атомарная запись через `.tmp` + `rename`
 - [x] Нужно добавить проект unit тестов QTest отдельно от основного кода —
       сделано для `api-server`: `services/api-server/tests/` (CMake-цели
       `tst_httptypes`, `tst_metrics`, `tst_appconfig`, `tst_jobrepository`,

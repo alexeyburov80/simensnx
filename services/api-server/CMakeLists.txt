@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16) # нужна PROJECT_IS_TOP_LEVEL ниже
+cmake_minimum_required(VERSION 3.16)
 project(api-server LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -7,14 +7,27 @@ set(CMAKE_AUTOMOC ON)
 
 # Тесты — отдельный проект/цель, не часть main.cpp (ROADMAP, Phase 0:
 # "добавить проект unit тестов QTest отдельно от основного кода"). Включены
-# по умолчанию только при сборке этого CMakeLists.txt напрямую (не как
-# часть родительской сборки, которая может не хотеть тянуть Qt5::Test).
+# по умолчанию всегда — этот CMakeLists.txt не используется как
+# add_subdirectory() из какого-либо родительского монорепо-билда (каждый
+# сервис собирается независимо, см. docker-compose.yml/Dockerfile), так что
+# специально определять "мы тут top-level или нет" не нужно. Раньше здесь
+# было "${PROJECT_IS_TOP_LEVEL}" — эта переменная существует только с
+# CMake 3.21+, на более старом CMake (в т.ч. встроенном в некоторые версии
+# Qt Creator) она разворачивалась в пустую строку, option() трактовал её
+# как OFF, и tests/ молча не подключался.
 option(API_SERVER_BUILD_TESTS "Собирать QTest-юниты для api-server" ON)
 # Позволяет сконфигурировать ТОЛЬКО api-server-core + tests, вообще не
 # трогая FetchContent(amqpcpp) (а значит и не требуя OpenSSL dev-заголовков
 # и сети до GitHub). Актуально для быстрого CI-джоба "юнит-тесты" отдельно
 # от джоба "собрать образ": `cmake -DAPI_SERVER_BUILD_APP=OFF -DAPI_SERVER_BUILD_TESTS=ON`.
 option(API_SERVER_BUILD_APP "Собирать сам исполняемый api-server (тянет amqpcpp через FetchContent)" ON)
+# Покрытие кода тестами (gcov). Инструментируем ТОЛЬКО api-server-core —
+# именно её код гоняют tst_*, инструментировать main.cpp/QtAmqpConnection.cpp
+# смысла нет, они тестами не вызываются вовсе. Включать явно
+# (-DAPI_SERVER_COVERAGE=ON), а не всегда: --coverage раздувает бинарники и
+# исключает оптимизации, для обычной локальной сборки/CI-джоба "юнит-тесты"
+# не нужен.
+option(API_SERVER_COVERAGE "Собрать api-server-core с инструментацией gcov (--coverage)" OFF)
 
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network Sql)
 
@@ -39,6 +52,16 @@ add_library(api-server-core STATIC
 )
 target_include_directories(api-server-core PUBLIC src)
 target_link_libraries(api-server-core PUBLIC Qt5::Core Qt5::Network Qt5::Sql)
+
+if(API_SERVER_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "API_SERVER_COVERAGE поддержан только для GCC/Clang (--coverage)")
+    endif()
+    # -O0 -g поверх --coverage — без этого gcov даёт недостоверные строки
+    # покрытия (оптимизатор схлопывает/переупорядочивает блоки кода).
+    target_compile_options(api-server-core PUBLIC --coverage -O0 -g)
+    target_link_options(api-server-core PUBLIC --coverage)
+endif()
 
 if(API_SERVER_BUILD_APP)
     # AMQP-CPP не пакетирован для Debian bookworm / Ubuntu 24.04 (проверено:

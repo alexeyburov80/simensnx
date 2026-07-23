@@ -1,6 +1,6 @@
 #include <QtTest>
 
-#include "../src/Metrics.h"
+#include "Metrics.h"
 
 class TstMetrics : public QObject {
     Q_OBJECT

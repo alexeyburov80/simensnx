@@ -52,30 +52,54 @@ void installSignalHandlers(QCoreApplication &app) {
     sigaction(SIGTERM, &sa, nullptr);
 }
 
-// Дергает GET {baseUrl}/health с таймаутом и зовёт callback(true/false).
-// file-storage-service на момент написания этого сервиса ЕЩЁ САМ являлся
-// пустой заглушкой — поэтому здесь ожидаемо было connection refused, и это
-// не баг воркера. Теперь file-storage-service отвечает по-настоящему.
-void checkDependency(QNetworkAccessManager &nam, const QUrl &baseUrl, const QString &label,
-                      std::function<void(bool)> callback) {
-    QUrl url = baseUrl;
-    url.setPath(url.path() + "/health");
+struct UploadResult {
+    bool ok = false;
+    QString key;
+};
 
-    auto *reply = nam.get(QNetworkRequest(url));
+// PUT {baseUrl}/files/{key} с телом-заглушкой результата. Раньше здесь был
+// только GET /health (checkDependency) — воркер проверял, что
+// file-storage-service жив, но не клал в неё вообще ничего: result_file_ref
+// в jobs.status был вымышленной строкой, ни на что реально не указывающей.
+// Тело — не пустое и не случайные байты, а минимальный синтаксически
+// валидный STEP-файл (ISO-10303-21), чтобы то, что лежит в file-storage,
+// уже сейчас можно было открыть/распознать как файл нужного формата, а не
+// просто "какие-то байты".
+void uploadStubResult(QNetworkAccessManager &nam, const QUrl &fileStorageUrl, const QString &jobId,
+                       std::function<void(UploadResult)> callback) {
+    const QString key = "results/" + jobId + ".step";
+    QUrl url = fileStorageUrl;
+    url.setPath(url.path() + "/files/" + key);
+
+    const QByteArray body =
+        "ISO-10303-21;\n"
+        "HEADER;\n"
+        "/* Stub result from nx-worker-stub for job " + jobId.toUtf8() + " */\n"
+        "/* Phase 0: no real NX processing yet, see ROADMAP.md Phase 2 */\n"
+        "ENDSEC;\n"
+        "DATA;\n"
+        "ENDSEC;\n"
+        "END-ISO-10303-21;\n";
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
+    auto *reply = nam.put(request, body);
     auto *timeout = new QTimer(reply);
     timeout->setSingleShot(true);
     QObject::connect(timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
-    timeout->start(3000);
+    timeout->start(5000);
 
-    QObject::connect(reply, &QNetworkReply::finished, reply, [reply, label, callback]() {
-        const bool ok = reply->error() == QNetworkReply::NoError;
-        if (!ok) {
-            qWarning() << "[nx-worker-stub] dependency check failed:" << label << "->" << reply->errorString();
-        } else {
-            qInfo() << "[nx-worker-stub] dependency check ok:" << label;
+    QObject::connect(reply, &QNetworkReply::finished, reply, [reply, key, callback]() {
+        UploadResult result;
+        result.key = key;
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        result.ok = (reply->error() == QNetworkReply::NoError) && (httpStatus == 201);
+        if (!result.ok) {
+            qWarning() << "[nx-worker-stub] failed to upload result" << key << "- http" << httpStatus
+                       << reply->errorString();
         }
         reply->deleteLater();
-        callback(ok);
+        callback(result);
     });
 }
 
@@ -277,22 +301,62 @@ int main(int argc, char *argv[]) {
                     // понадобится, рвём тот же self-reference cycle.
                     *checkoutAttempt = nullptr;
 
-                    checkDependency(nam, fileStorageUrl, "file-storage-service",
-                                     [&amqp, &nam, &metrics, licenseServerUrl, serviceName, jobId, deliveryTag, token = license.token](bool) {
-                        // Имитация обработки задания. Намеренно не блокирует
-                        // event loop (в отличие от std::this_thread::sleep_for
-                        // в исходной заглушке) — на реальном Windows-воркере
-                        // здесь будет вызов NX API.
-                        QTimer::singleShot(1000, [&amqp, &nam, &metrics, licenseServerUrl, serviceName, jobId, deliveryTag, token]() {
-                            qInfo() << "[" << serviceName << "] job" << jobId << "processed, releasing license and acking";
-                            checkinLicense(nam, licenseServerUrl, token);
-                            amqp.ack(deliveryTag);
-                            metrics.inc("worker_jobs_completed_total", "Total jobs finished by the worker", {{"job_type", "process"}, {"result", "done"}});
-                            // result_file_ref — плейсхолдер-ключ в
-                            // file-storage-service; реальная запись файла
-                            // результата появится вместе с настоящей NX-логикой.
-                            publishStatus(amqp, jobId, "done", "results/" + jobId + ".step");
-                        });
+                    // Имитация обработки задания. Намеренно не блокирует
+                    // event loop (в отличие от std::this_thread::sleep_for
+                    // в исходной заглушке) — на реальном Windows-воркере
+                    // здесь будет вызов NX API.
+                    QTimer::singleShot(1000, [&amqp, &nam, &metrics, fileStorageUrl, licenseServerUrl, serviceName,
+                                               jobId, deliveryTag, token = license.token]() {
+                        // Та же схема ретраев с бэкоффом, что у checkoutAttempt
+                        // выше — тут по той же причине (self-referencing
+                        // shared_ptr<function>, живёт, пока не обнулён явно).
+                        auto uploadAttempt = std::make_shared<std::function<void(int)>>();
+                        *uploadAttempt = [&amqp, &nam, &metrics, fileStorageUrl, licenseServerUrl, serviceName, jobId,
+                                          deliveryTag, token, uploadAttempt](int attempt) {
+                            uploadStubResult(nam, fileStorageUrl, jobId,
+                                              [&amqp, &nam, &metrics, licenseServerUrl, serviceName, jobId,
+                                               deliveryTag, token, uploadAttempt, attempt](UploadResult upload) {
+                                if (!upload.ok) {
+                                    constexpr int kMaxUploadAttempts = 5;
+                                    if (attempt >= kMaxUploadAttempts) {
+                                        qWarning() << "[" << serviceName << "] job" << jobId
+                                                   << "could not store result after" << attempt
+                                                   << "attempts - giving up, releasing license and routing to DLQ";
+                                        // Лицензия уже занята этой задачей — раз
+                                        // сохранить результат не вышло, освобождаем
+                                        // место сейчас, а не оставляем висеть до TTL:
+                                        // компенсирующее действие для уже
+                                        // выполненного шага saga (см. предыдущее
+                                        // обсуждение архитектуры).
+                                        checkinLicense(nam, licenseServerUrl, token);
+                                        amqp.reject(deliveryTag, false); // -> jobs.dlq через RabbitMQ policy
+                                        metrics.inc("worker_jobs_completed_total", "Total jobs finished by the worker",
+                                                     {{"job_type", "process"}, {"result", "failed"}});
+                                        publishStatus(amqp, jobId, "failed", {},
+                                                       "failed to store result in file-storage-service after retries");
+                                        *uploadAttempt = nullptr;
+                                        return;
+                                    }
+                                    const int delayMs = std::min(1000 * (1 << attempt), 15000);
+                                    qInfo() << "[" << serviceName << "] job" << jobId << "result upload failed, retry"
+                                            << (attempt + 1) << "in" << delayMs << "ms";
+                                    metrics.inc("worker_result_upload_retries_total",
+                                                 "Total times storing a job result in file-storage-service had to be retried");
+                                    QTimer::singleShot(delayMs, [uploadAttempt, attempt]() { (*uploadAttempt)(attempt + 1); });
+                                    return;
+                                }
+
+                                *uploadAttempt = nullptr;
+                                qInfo() << "[" << serviceName << "] job" << jobId
+                                        << "result stored, releasing license and acking";
+                                checkinLicense(nam, licenseServerUrl, token);
+                                amqp.ack(deliveryTag);
+                                metrics.inc("worker_jobs_completed_total", "Total jobs finished by the worker",
+                                             {{"job_type", "process"}, {"result", "done"}});
+                                publishStatus(amqp, jobId, "done", upload.key);
+                            });
+                        };
+                        (*uploadAttempt)(0);
                     });
                 });
             };

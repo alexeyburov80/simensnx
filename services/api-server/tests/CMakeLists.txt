@@ -1,4 +1,4 @@
-find_package(Qt5 5.15 REQUIRED COMPONENTS Network Test)
+find_package(Qt5 5.15 REQUIRED COMPONENTS Test)
 
 # Один тестовый бинарник на один QObject-класс с тестами — стандартная для
 # QTest практика (каждый .cpp сам себе QTEST_MAIN/QTEST_GUILESS_MAIN, свой

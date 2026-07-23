@@ -1,14 +1,48 @@
 {
+  "rabbit_version": "3.13.0",
+  "rabbitmq_version": "3.13.0",
+  "product_name": "RabbitMQ",
+  "product_version": "3.13.0",
+
+  "users": [],
+  "vhosts": [
+    { "name": "/" }
+  ],
+  "permissions": [],
+  "topic_permissions": [],
+  "parameters": [],
+  "global_parameters": [],
+
   "policies": [
     {
-      "name": "jobs-dead-lettering",
       "vhost": "/",
-      "pattern": "^jobs\\.(process|validate|job-state-service\\..*)$",
+      "name": "jobs-dead-lettering",
+      "pattern": "^jobs\\.(process|validate)$",
       "apply-to": "queues",
       "definition": {
         "dead-letter-exchange": "jobs.dlx"
       },
       "priority": 0
     }
+  ],
+
+  "queues": [
+    { "name": "jobs.process", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
+    { "name": "jobs.validate", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
+    { "name": "jobs.dlq", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
+    { "name": "jobs.job-state-service.intake", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
+    { "name": "jobs.job-state-service.status", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} }
+  ],
+
+  "exchanges": [
+    { "name": "jobs.dlx", "vhost": "/", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "jobs.events", "vhost": "/", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} },
+    { "name": "jobs.status", "vhost": "/", "type": "fanout", "durable": true, "auto_delete": false, "internal": false, "arguments": {} }
+  ],
+
+  "bindings": [
+    { "source": "jobs.dlx", "vhost": "/", "destination": "jobs.dlq", "destination_type": "queue", "routing_key": "", "arguments": {} },
+    { "source": "jobs.events", "vhost": "/", "destination": "jobs.job-state-service.intake", "destination_type": "queue", "routing_key": "", "arguments": {} },
+    { "source": "jobs.status", "vhost": "/", "destination": "jobs.job-state-service.status", "destination_type": "queue", "routing_key": "", "arguments": {} }
   ]
 }

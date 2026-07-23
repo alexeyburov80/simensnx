@@ -1,6 +1,6 @@
 #include <QtTest>
 
-#include "../src/HttpTypes.h"
+#include "HttpTypes.h"
 
 class TstHttpTypes : public QObject {
     Q_OBJECT

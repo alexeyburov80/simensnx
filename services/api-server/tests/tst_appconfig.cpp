@@ -1,7 +1,7 @@
 #include <QtTest>
 
-#include "../src/config/appConfig.h"
-#include "../src/config/env.h"
+#include "config/appConfig.h"
+#include "config/env.h"
 
 class TstAppConfig : public QObject {
     Q_OBJECT

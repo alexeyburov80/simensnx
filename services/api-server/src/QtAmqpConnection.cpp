@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <QDebug>
 
+#include "RabbitTopics.h"
+
 QtAmqpConnection::QtAmqpConnection(QObject *parent) : QObject(parent) {
     connect(&m_heartbeatTimer, &QTimer::timeout, this, &QtAmqpConnection::sendHeartbeat);
     m_reconnectTimer.setSingleShot(true);
@@ -114,8 +116,8 @@ void QtAmqpConnection::onConnected(AMQP::TcpConnection *connection) {
     });
 
     m_channel->onReady([this]() {
-        m_channel->declareQueue("jobs.process", AMQP::durable);
-        m_channel->declareQueue("jobs.validate", AMQP::durable);
+        m_channel->declareQueue(RabbitTopics::ProcessQueue, AMQP::durable);
+        m_channel->declareQueue(RabbitTopics::ValidateQueue, AMQP::durable);
 
         // jobs.dlq раньше объявлялась, но ничего в неё реально не
         // попадало — не было ни одного места, которое настраивало бы
@@ -127,9 +129,9 @@ void QtAmqpConnection::onConnected(AMQP::TcpConnection *connection) {
         // аргументами (RabbitMQ требует их побитового совпадения и рвёт
         // канал при расхождении — а jobs.process/jobs.validate объявляют
         // и api-server, и nx-worker-stub независимо).
-        m_channel->declareExchange("jobs.dlx", AMQP::fanout, AMQP::durable);
-        m_channel->declareQueue("jobs.dlq", AMQP::durable);
-        m_channel->bindQueue("jobs.dlx", "jobs.dlq", "");
+        m_channel->declareExchange(RabbitTopics::DeadLetterExchange, AMQP::fanout, AMQP::durable);
+        m_channel->declareQueue(RabbitTopics::DeadLetterQueue, AMQP::durable);
+        m_channel->bindQueue(RabbitTopics::DeadLetterExchange, RabbitTopics::DeadLetterQueue, "");
 
         // Отдельный fanout-обменник для "событий о создании задачи" —
         // job-state-service подписан на него своей очередью и пишет
@@ -137,7 +139,7 @@ void QtAmqpConnection::onConnected(AMQP::TcpConnection *connection) {
         // Существующие jobs.process/jobs.validate трогать не пришлось:
         // nx-worker-stub как забирал работу оттуда напрямую, так и
         // продолжает, ничего в его поведении не поменялось.
-        m_channel->declareExchange("jobs.events", AMQP::fanout, AMQP::durable);
+        m_channel->declareExchange(RabbitTopics::EventsExchange, AMQP::fanout, AMQP::durable);
 
         m_ready = true;
         qInfo() << "[AMQP] channel ready, queues declared";

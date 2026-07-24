@@ -11,6 +11,8 @@
 #include <amqpcpp.h>
 #include <amqpcpp/linux_tcp.h>
 
+#include "JobPublisher.h"
+
 // Интеграция AMQP-CPP с event loop'ом Qt.
 //
 // AMQP-CPP не выполняет сетевой ввод-вывод сам — он вызывает monitor(fd, flags),
@@ -19,7 +21,12 @@
 // готов. Официальные примеры делают это через libev/libuv/libevent; здесь то же
 // самое сделано через QSocketNotifier, то есть без каких-либо сторонних
 // event-loop библиотек — только Qt.
-class QtAmqpConnection : public QObject, public AMQP::TcpHandler {
+//
+// Реализует IJobPublisher (common/JobPublisher.h) — publish()/isReady() уже
+// имели ровно нужную сигнатуру, изменений в логике не потребовалось. Это
+// то, что позволяет JobsController зависеть от абстракции, а не от
+// amqpcpp напрямую (DIP) — и, как следствие, тестироваться без него.
+class QtAmqpConnection : public QObject, public AMQP::TcpHandler, public IJobPublisher {
     Q_OBJECT
 public:
     explicit QtAmqpConnection(QObject *parent = nullptr);
@@ -29,12 +36,12 @@ public:
     void connectToServer(const QUrl &rabbitmqUrl);
 
     // true только после успешного onReady() (соединение установлено И канал открыт).
-    bool isReady() const { return m_ready; }
+    bool isReady() const override { return m_ready; }
 
     // Возвращает false, если канал ещё не готов — вызывающий код должен
     // трактовать это как временную недоступность брокера (503), а не как
     // "сообщение отправлено".
-    bool publish(const QString &exchange, const QString &routingKey, const QByteArray &body);
+    bool publish(const QString &exchange, const QString &routingKey, const QByteArray &body) override;
 
 signals:
     void ready();

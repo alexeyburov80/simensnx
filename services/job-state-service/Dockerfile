@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+COPY common/ common/
+COPY services/job-state-service/ services/job-state-service/
+RUN cmake -B build -S services/job-state-service -G Ninja -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel
 
 FROM debian:bookworm-slim

@@ -10,9 +10,12 @@ set(CMAKE_AUTOMOC ON)
 # вместе с настоящим OAuth2/OIDC).
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network)
 
+# HttpServer/HttpTypes/Metrics — общие для всех сервисов, см. common/CMakeLists.txt.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../common ${CMAKE_CURRENT_BINARY_DIR}/common)
+
 add_executable(auth-stub
     src/main.cpp
-    src/HttpServer.cpp
 )
 
-target_link_libraries(auth-stub PRIVATE Qt5::Core Qt5::Network)
+target_link_libraries(auth-stub PRIVATE simensnx-common)
+

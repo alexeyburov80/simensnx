@@ -16,8 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+# Контекст сборки — корень репозитория (см. docker-compose.yml), не
+# services/api-server: common/ используется несколькими сервисами (см.
+# common/CMakeLists.txt), а Docker не даёт выйти за пределы build context
+# через "../..". Копируем точечно (не COPY . .), чтобы правка кода в
+# другом сервисе не инвалидировала кэш этого слоя.
+COPY common/ common/
+COPY services/api-server/ services/api-server/
+RUN cmake -B build -S services/api-server -G Ninja -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel
 
 FROM debian:bookworm-slim

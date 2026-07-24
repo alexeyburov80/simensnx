@@ -4,53 +4,20 @@
 #include <QJsonParseError>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
-#include <QSocketNotifier>
 #include <QTimer>
 #include <QUrl>
 #include <QDebug>
 
 #include <algorithm>
-#include <csignal>
 #include <memory>
-#include <sys/socket.h>
-#include <unistd.h>
 
+#include "GracefulShutdown.h"
 #include "HttpServer.h"
 #include "Metrics.h"
 #include "QtAmqpConsumer.h"
+#include "RabbitTopics.h"
 
 namespace {
-
-// --- graceful shutdown (тот же self-pipe trick, что в api-server) ---
-int g_sigFd[2];
-
-void unixSignalHandler(int) {
-    char a = 1;
-    if (::write(g_sigFd[1], &a, sizeof(a)) != sizeof(a)) {
-        // см. комментарий в api-server/src/main.cpp — в обработчике сигнала
-        // безопасно писать в самопайп и больше ничего.
-    }
-}
-
-void installSignalHandlers(QCoreApplication &app) {
-    ::socketpair(AF_UNIX, SOCK_STREAM, 0, g_sigFd);
-    auto *notifier = new QSocketNotifier(g_sigFd[0], QSocketNotifier::Read, &app);
-    QObject::connect(notifier, &QSocketNotifier::activated, &app, [&app, notifier](QSocketDescriptor, QSocketNotifier::Type) {
-        char tmp;
-        const auto n = ::read(g_sigFd[0], &tmp, sizeof(tmp));
-        (void)n;
-        notifier->setEnabled(false);
-        qInfo() << "[nx-worker-stub] shutdown signal received, stopping";
-        app.quit();
-    });
-
-    struct sigaction sa{};
-    sa.sa_handler = unixSignalHandler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    sigaction(SIGINT, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
-}
 
 struct UploadResult {
     bool ok = false;
@@ -172,7 +139,7 @@ void publishStatus(QtAmqpConsumer &amqp, const QString &jobId, const QString &st
     if (!resultFileRef.isEmpty()) payload["result_file_ref"] = resultFileRef;
     if (!errorMessage.isEmpty()) payload["error_message"] = errorMessage;
     const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    if (!amqp.publish("jobs.status", "", body)) {
+    if (!amqp.publish(RabbitTopics::StatusExchange, "", body)) {
         qWarning() << "[nx-worker-stub] failed to publish" << status << "event for job" << jobId;
     }
 }
@@ -181,7 +148,7 @@ void publishStatus(QtAmqpConsumer &amqp, const QString &jobId, const QString &st
 
 int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
-    installSignalHandlers(app);
+    installSignalHandlers(app, "nx-worker-stub");
 
     const QString serviceName = "nx-worker-stub";
 
@@ -246,7 +213,7 @@ int main(int argc, char *argv[]) {
             // (attempt_count) — см. его main.cpp.
             publishStatus(amqp, jobId, "processing");
 
-            if (queueName == "jobs.validate") {
+            if (queueName == RabbitTopics::ValidateQueue) {
                 // По требованию: реальной валидации на этом этапе нет,
                 // задача просто одобряется. Никаких вызовов license-server/
                 // file-storage — валидации нечего у них спрашивать.
@@ -366,10 +333,10 @@ int main(int argc, char *argv[]) {
 
     QObject::connect(&amqp, &QtAmqpConsumer::ready, [&]() {
         qInfo() << "[" << serviceName << "] RabbitMQ channel ready, starting consumers";
-        amqp.declareCompletionExchange("jobs.status");
+        amqp.declareCompletionExchange(RabbitTopics::StatusExchange);
         const int prefetch = prefetchOk && prefetchCount > 0 ? prefetchCount : 1;
-        amqp.consume("jobs.process", prefetch, handleMessage("jobs.process"));
-        amqp.consume("jobs.validate", prefetch, handleMessage("jobs.validate"));
+        amqp.consume(RabbitTopics::ProcessQueue, prefetch, handleMessage(RabbitTopics::ProcessQueue));
+        amqp.consume(RabbitTopics::ValidateQueue, prefetch, handleMessage(RabbitTopics::ValidateQueue));
     });
 
     amqp.connectToServer(rabbitmqUrl);

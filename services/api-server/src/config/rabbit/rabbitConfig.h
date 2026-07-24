@@ -2,15 +2,22 @@
 
 #include <QString>
 
+#include "RabbitTopics.h"
+
+// Поля остаются QString (не inline constexpr), потому что RabbitConfig —
+// часть AppConfig и исторически задумывался как runtime-конфигурируемый
+// (хотя сейчас appConfig.cpp ничего из этого не переопределяет через env —
+// см. её реализацию). Источник имён по умолчанию теперь один —
+// common/RabbitTopics.h, а не отдельная копия строк здесь.
 struct RabbitConfig
 {
-    QString processQueue = "jobs.process";
+    QString processQueue = RabbitTopics::ProcessQueue;
 
-    QString validateQueue = "jobs.validate";
+    QString validateQueue = RabbitTopics::ValidateQueue;
 
-    QString eventsExchange = "jobs.events";
+    QString eventsExchange = RabbitTopics::EventsExchange;
 
-    QString deadLetterExchange = "jobs.dlx";
+    QString deadLetterExchange = RabbitTopics::DeadLetterExchange;
 
-    QString deadLetterQueue = "jobs.dlq";
+    QString deadLetterQueue = RabbitTopics::DeadLetterQueue;
 };

@@ -7,6 +7,9 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network)
 
+# HttpServer/HttpTypes/Metrics — общие для всех сервисов, см. common/CMakeLists.txt.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../common ${CMAKE_CURRENT_BINARY_DIR}/common)
+
 # См. подробный комментарий в services/api-server/CMakeLists.txt: AMQP-CPP
 # не пакетирован для Debian bookworm/Ubuntu 24.04, поэтому FetchContent с
 # пином на тег, а не apt и не vendoring в git.
@@ -26,7 +29,6 @@ FetchContent_MakeAvailable(amqpcpp)
 add_executable(nx-worker-stub
     src/main.cpp
     src/QtAmqpConsumer.cpp
-    src/HttpServer.cpp
 )
 
-target_link_libraries(nx-worker-stub PRIVATE Qt5::Core Qt5::Network amqpcpp)
+target_link_libraries(nx-worker-stub PRIVATE simensnx-common amqpcpp)

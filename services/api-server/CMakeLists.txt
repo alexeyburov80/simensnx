@@ -31,16 +31,23 @@ option(API_SERVER_COVERAGE "Собрать api-server-core с инструмен
 
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network Sql)
 
+# HttpServer/HttpTypes/Metrics раньше жили здесь как src/HttpServer.cpp и
+# т.д. — идентичные (побайтово) копии лежали в 5 других сервисах, а версия
+# HttpServer в api-server успела уйти вперёд (async-обработчики, timeout
+# guard, port()) и молча разойтись с остальными. Вынесены в common/ —
+# см. common/CMakeLists.txt.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../common ${CMAKE_CURRENT_BINARY_DIR}/common)
+
 # api-server-core — всё, что НЕ зависит от amqpcpp/QtAmqpConnection и не
 # является main(). Вынесено в отдельную статическую библиотеку ровно для
 # того, чтобы tests/ мог слинковаться с реальным production-кодом, не
 # перетягивая AMQP-CPP (FetchContent, сборка из исходников) в тестовую
 # сборку — тестам она не нужна, а собирается заметно дольше самого кода.
 add_library(api-server-core STATIC
-    src/HttpServer.cpp
-    src/HttpServer.h
-    src/HttpTypes.h
-    src/Metrics.h
+    src/auth/AuthStubClient.h
+    src/auth/AuthStubClient.cpp
+    src/jobs/JobsController.h
+    src/jobs/JobsController.cpp
     src/config/env.h
     src/config/appConfig.h
     src/config/appConfig.cpp
@@ -51,7 +58,7 @@ add_library(api-server-core STATIC
     src/storage/jobrepository.cpp
 )
 target_include_directories(api-server-core PUBLIC src)
-target_link_libraries(api-server-core PUBLIC Qt5::Core Qt5::Network Qt5::Sql)
+target_link_libraries(api-server-core PUBLIC Qt5::Core Qt5::Network Qt5::Sql simensnx-common simensnx-common-sql)
 
 if(API_SERVER_COVERAGE)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -59,8 +66,12 @@ if(API_SERVER_COVERAGE)
     endif()
     # -O0 -g поверх --coverage — без этого gcov даёт недостоверные строки
     # покрытия (оптимизатор схлопывает/переупорядочивает блоки кода).
+    # simensnx-common тоже инструментируем: HttpServer (общий) гоняется
+    # тестом tst_httpserver, его покрытие тоже интересно видеть.
     target_compile_options(api-server-core PUBLIC --coverage -O0 -g)
     target_link_options(api-server-core PUBLIC --coverage)
+    target_compile_options(simensnx-common PUBLIC --coverage -O0 -g)
+    target_link_options(simensnx-common PUBLIC --coverage)
 endif()
 
 if(API_SERVER_BUILD_APP)

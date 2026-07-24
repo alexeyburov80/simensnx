@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <QDebug>
 
+#include "RabbitTopics.h"
+
 QtAmqpConsumer::QtAmqpConsumer(QObject *parent) : QObject(parent) {
     connect(&m_heartbeatTimer, &QTimer::timeout, this, &QtAmqpConsumer::sendHeartbeat);
     m_reconnectTimer.setSingleShot(true);
@@ -192,6 +194,6 @@ bool QtAmqpConsumer::publish(const QString &exchange, const QString &routingKey,
 
 void QtAmqpConsumer::declareWorkQueues() {
     if (!m_channel) return;
-    m_channel->declareQueue("jobs.process", AMQP::durable);
-    m_channel->declareQueue("jobs.validate", AMQP::durable);
+    m_channel->declareQueue(RabbitTopics::ProcessQueue, AMQP::durable);
+    m_channel->declareQueue(RabbitTopics::ValidateQueue, AMQP::durable);
 }

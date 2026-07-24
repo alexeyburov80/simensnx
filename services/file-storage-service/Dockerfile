@@ -8,8 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     qtbase5-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+COPY common/ common/
+COPY services/file-storage-service/ services/file-storage-service/
+RUN cmake -B build -S services/file-storage-service -G Ninja -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --parallel
 
 FROM debian:bookworm-slim

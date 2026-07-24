@@ -11,10 +11,16 @@ simensnx/
 ├── ROADMAP.md              — план перехода от заглушек к реальной реализации
 ├── docs/
 │   ├── adr/                 — architecture decision records
+│   ├── MESSAGES.md          — справочник по всем HTTP/AMQP-сообщениям в системе, статусы задачи
 │   ├── SCALING.md           — какие сервисы можно масштабировать, какие нет
 │   └── ADDING_A_SERVICE.md  — как добавить новый сервис/очередь по шаблону
 ├── docker-compose.yml      — локальное окружение для разработки (не прод!)
 ├── .env.example            — пример переменных окружения
+├── common/                  — общий код между сервисами (HttpServer, HttpTypes,
+│                              Metrics, RabbitTopics); каждый сервис подключает
+│                              его через add_subdirectory() в своём CMakeLists.txt,
+│                              поэтому Docker build context у всех сервисов — корень
+│                              репозитория, а не services/<name> (см. Dockerfile)
 ├── services/                — исходники всех сервисов (кроме NX-воркера — Windows-контур)
 │   ├── api-server/          — HTTP API для клиентов
 │   ├── auth-stub/           — заглушка авторизации/аутентификации

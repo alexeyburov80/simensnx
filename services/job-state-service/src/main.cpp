@@ -5,7 +5,6 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QRegularExpression>
-#include <QSocketNotifier>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -15,60 +14,19 @@
 #include <QDebug>
 
 #include <algorithm>
-#include <csignal>
 #include <memory>
-#include <sys/socket.h>
-#include <unistd.h>
 
+#include "GracefulShutdown.h"
 #include "HttpServer.h"
 #include "Metrics.h"
+#include "PostgresConnection.h"
 #include "QtAmqpConsumer.h"
+#include "RabbitTopics.h"
 
 namespace {
 
-int g_sigFd[2];
-
-void unixSignalHandler(int) {
-    char a = 1;
-    if (::write(g_sigFd[1], &a, sizeof(a)) != sizeof(a)) {
-    }
-}
-
-void installSignalHandlers(QCoreApplication &app) {
-    ::socketpair(AF_UNIX, SOCK_STREAM, 0, g_sigFd);
-    auto *notifier = new QSocketNotifier(g_sigFd[0], QSocketNotifier::Read, &app);
-    QObject::connect(notifier, &QSocketNotifier::activated, &app, [&app, notifier](QSocketDescriptor, QSocketNotifier::Type) {
-        char tmp;
-        const auto n = ::read(g_sigFd[0], &tmp, sizeof(tmp));
-        (void)n;
-        notifier->setEnabled(false);
-        qInfo() << "[job-state-service] shutdown signal received, stopping";
-        app.quit();
-    });
-
-    struct sigaction sa{};
-    sa.sa_handler = unixSignalHandler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    sigaction(SIGINT, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
-}
-
 QByteArray errorJson(const QString &message) {
     return QJsonDocument(QJsonObject{{"error", message}}).toJson(QJsonDocument::Compact);
-}
-
-bool openDatabase(const QUrl &databaseUrl) {
-    QSqlDatabase db = QSqlDatabase::addDatabase("QPSQL");
-    db.setHostName(databaseUrl.host());
-    db.setPort(databaseUrl.port(5432));
-    QString dbName = databaseUrl.path();
-    if (dbName.startsWith('/')) dbName.remove(0, 1);
-    db.setDatabaseName(dbName);
-    db.setUserName(databaseUrl.userName());
-    db.setPassword(databaseUrl.password());
-    db.setConnectOptions("connect_timeout=5");
-    return db.open();
 }
 
 QJsonObject jobRowToJson(const QSqlQuery &q) {
@@ -117,7 +75,7 @@ void retryOrDeadLetter(QtAmqpConsumer &amqp, Metrics &metrics, const QString &jo
         // "processing" (см. services/nx-worker-stub) — здесь его заново не
         // увеличиваем, следующая попытка сама себя посчитает, когда
         // какой-нибудь воркер снова возьмёт задачу в работу.
-        const QString queue = (jobType == "validate") ? "jobs.validate" : "jobs.process";
+        const QString queue = (jobType == "validate") ? RabbitTopics::ValidateQueue : RabbitTopics::ProcessQueue;
         const QJsonObject payload{
             {"job_id", jobId}, {"client_id", clientId}, {"job_type", jobType}, {"input_file_ref", inputFileRef},
         };
@@ -154,7 +112,7 @@ void retryOrDeadLetter(QtAmqpConsumer &amqp, Metrics &metrics, const QString &jo
 
 int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
-    installSignalHandlers(app);
+    installSignalHandlers(app, "job-state-service");
 
     bool portOk = false;
     const quint16 port = qEnvironmentVariable("PORT", "8082").toUShort(&portOk);
@@ -165,7 +123,7 @@ int main(int argc, char *argv[]) {
 
     const QUrl databaseUrl(qEnvironmentVariable("DATABASE_URL",
         "postgres://simensnx:simensnx@postgres:5432/simensnx"));
-    if (!openDatabase(databaseUrl)) {
+    if (!openPostgresConnection(databaseUrl)) {
         qCritical() << "[job-state-service] failed to connect to PostgreSQL:"
                      << QSqlDatabase::database().lastError().text();
         return 1;
@@ -210,7 +168,7 @@ int main(int argc, char *argv[]) {
 
         // Consume копии события о создании задачи из fanout-обменника jobs.events
         // (объявляет и публикует его api-server, см. services/api-server).
-        amqp.consumeFromFanoutExchange("jobs.events", "jobs.job-state-service.intake", 10,
+        amqp.consumeFromFanoutExchange(RabbitTopics::EventsExchange, RabbitTopics::JobStateIntakeQueue, 10,
             [&amqp, &metrics](const AMQP::Message &message, uint64_t deliveryTag, bool redelivered) {
                 const QByteArray body(message.body(), static_cast<int>(message.bodySize()));
 
@@ -272,7 +230,7 @@ int main(int argc, char *argv[]) {
         // failed теперь не терминальное состояние само по себе —
         // retryOrDeadLetter() решает, вернуть задачу в очередь или отправить
         // в dead_letter, в зависимости от attempt_count/max_attempts.
-        amqp.consumeFromFanoutExchange("jobs.status", "jobs.job-state-service.status", 10,
+        amqp.consumeFromFanoutExchange(RabbitTopics::StatusExchange, RabbitTopics::JobStateStatusQueue, 10,
             [&amqp, &metrics, unknownJobRetries](const AMQP::Message &message, uint64_t deliveryTag, bool redelivered) {
                 const QByteArray body(message.body(), static_cast<int>(message.bodySize()));
 

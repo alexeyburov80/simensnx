@@ -24,7 +24,16 @@ private slots:
         QVERIFY2(q.exec("CREATE TABLE jobs ("
                          "  id TEXT PRIMARY KEY,"
                          "  idempotency_key TEXT,"
-                         "  status TEXT"
+                         "  client_id TEXT,"
+                         "  job_type TEXT,"
+                         "  status TEXT,"
+                         "  input_file_ref TEXT,"
+                         "  result_file_ref TEXT,"
+                         "  error_message TEXT,"
+                         "  attempt_count INTEGER,"
+                         "  max_attempts INTEGER,"
+                         "  created_at TEXT,"
+                         "  updated_at TEXT"
                          ")"),
                  qPrintable(q.lastError().text()));
     }
@@ -95,6 +104,48 @@ private slots:
         JobRepository repo;
         const ExistingJob result = repo.findByIdempotencyKey("");
         QVERIFY(!result.found);
+    }
+
+    // findById() был объявлен в заголовке, но не реализован (ноль
+    // вызывающих) до вынесения GET /jobs/{id} в JobsController — вот эти
+    // тесты и есть первая проверка того, что реализация вообще делает то,
+    // что нужно.
+    void findById_noMatch_returnsNotFoundWithoutQueryFailure() {
+        JobRepository repo;
+        const JobLookup result = repo.findById("does-not-exist");
+        QVERIFY(!result.found);
+        QVERIFY(!result.queryFailed); // "не найдено" — не то же самое, что "запрос упал"
+    }
+
+    void findById_match_returnsAllFields() {
+        QSqlQuery insert;
+        insert.prepare(
+            "INSERT INTO jobs (id, client_id, job_type, status, input_file_ref, result_file_ref, "
+            "error_message, attempt_count, max_attempts, created_at, updated_at) "
+            "VALUES (:id, :client_id, :job_type, :status, :input_file_ref, :result_file_ref, "
+            ":error_message, :attempt_count, :max_attempts, :created_at, :updated_at)");
+        insert.bindValue(":id", "22222222-2222-2222-2222-222222222222");
+        insert.bindValue(":client_id", "acme-corp");
+        insert.bindValue(":job_type", "process");
+        insert.bindValue(":status", "done");
+        insert.bindValue(":input_file_ref", "models/part1.step");
+        insert.bindValue(":result_file_ref", "results/22222222.step");
+        insert.bindValue(":error_message", QVariant(QVariant::String)); // NULL — задача не падала
+        insert.bindValue(":attempt_count", 1);
+        insert.bindValue(":max_attempts", 3);
+        insert.bindValue(":created_at", "2026-07-22T10:00:00");
+        insert.bindValue(":updated_at", "2026-07-22T10:00:05");
+        QVERIFY2(insert.exec(), qPrintable(insert.lastError().text()));
+
+        JobRepository repo;
+        const JobLookup result = repo.findById("22222222-2222-2222-2222-222222222222");
+        QVERIFY(result.found);
+        QVERIFY(!result.queryFailed);
+        QCOMPARE(result.fields.value("client_id").toString(), QString("acme-corp"));
+        QCOMPARE(result.fields.value("status").toString(), QString("done"));
+        QCOMPARE(result.fields.value("result_file_ref").toString(), QString("results/22222222.step"));
+        QVERIFY(result.fields.value("error_message").isNull()); // JobsController::handleGet опускает это поле целиком, если NULL
+        QCOMPARE(result.fields.value("attempt_count").toInt(), 1);
     }
 };
 

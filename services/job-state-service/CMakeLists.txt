@@ -7,6 +7,9 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network Sql)
 
+# HttpServer/HttpTypes/Metrics — общие для всех сервисов, см. common/CMakeLists.txt.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../common ${CMAKE_CURRENT_BINARY_DIR}/common)
+
 include(FetchContent)
 FetchContent_Declare(
     amqpcpp
@@ -22,8 +25,7 @@ FetchContent_MakeAvailable(amqpcpp)
 
 add_executable(job-state-service
     src/main.cpp
-    src/HttpServer.cpp
     src/QtAmqpConsumer.cpp
 )
 
-target_link_libraries(job-state-service PRIVATE Qt5::Core Qt5::Network Qt5::Sql amqpcpp)
+target_link_libraries(job-state-service PRIVATE simensnx-common simensnx-common-sql Qt5::Sql amqpcpp)

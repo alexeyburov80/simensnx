@@ -11,9 +11,11 @@ set(CMAKE_AUTOMOC ON)
 # nx-worker-stub.
 find_package(Qt5 5.15 REQUIRED COMPONENTS Core Network)
 
+# HttpServer/HttpTypes/Metrics — общие для всех сервисов, см. common/CMakeLists.txt.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../common ${CMAKE_CURRENT_BINARY_DIR}/common)
+
 add_executable(file-storage-service
     src/main.cpp
-    src/HttpServer.cpp
 )
 
-target_link_libraries(file-storage-service PRIVATE Qt5::Core Qt5::Network)
+target_link_libraries(file-storage-service PRIVATE simensnx-common)
